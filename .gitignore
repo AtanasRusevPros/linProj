@@ -1,0 +1,27 @@
+# Build output
+build/
+p_test2/
+
+# Python virtual environment
+.venv/
+
+# Python bytecode
+__pycache__/
+*.pyc
+
+# Pytest cache
+.pytest_cache/
+
+# IDE / editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Reference thread pool (not part of deliverable)
+CPP11_ThreadPool/

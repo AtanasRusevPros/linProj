@@ -1,0 +1,29 @@
+# Doxyfile configuration -- generated paths filled by CMake
+
+PROJECT_NAME           = "IPC Client-Server System"
+PROJECT_BRIEF          = "Linux IPC system using POSIX shared memory and semaphores"
+OUTPUT_DIRECTORY       = @CMAKE_BINARY_DIR@/docs/doxygen
+INPUT                  = @CMAKE_SOURCE_DIR@/src @CMAKE_SOURCE_DIR@/include
+FILE_PATTERNS          = *.h *.cpp
+RECURSIVE              = NO
+EXTRACT_ALL            = YES
+EXTRACT_STATIC         = YES
+
+# Generate XML for Breathe/Sphinx integration
+GENERATE_XML           = YES
+XML_OUTPUT             = xml
+
+# HTML output
+GENERATE_HTML          = YES
+HTML_OUTPUT            = html
+
+# Disable LaTeX by default
+GENERATE_LATEX         = NO
+
+# Optimization for C/C++
+OPTIMIZE_OUTPUT_FOR_C  = YES
+TYPEDEF_HIDES_STRUCT   = YES
+
+# Quiet mode
+QUIET                  = YES
+WARNINGS               = YES
