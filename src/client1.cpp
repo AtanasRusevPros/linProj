@@ -55,7 +55,6 @@ static void retry_pending_after_restart(std::vector<PendingRequest> &pending)
         } else if (rc == IPC_ERR_SERVER_RESTARTED) {
             printf("Server is still restarting; pending requests remain queued for retry.\n");
             it->id = 0;
-            ++it;
             break;
         } else {
             printf("Failed to re-submit [%s]; dropping this pending request.\n",

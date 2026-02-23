@@ -318,7 +318,7 @@ static void cleanup_ipc(void)
 /*  Main                                                               */
 /* ================================================================== */
 
-int main(int argc, char *argv[])
+int main(int argc, const char *argv[])
 {
     /* --- Parse command-line flags --- */
     size_t threads_per_pool = default_threads_per_pool();

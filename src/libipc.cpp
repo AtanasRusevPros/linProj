@@ -89,17 +89,22 @@ static int ensure_fresh_connection()
 
 static int lock_shared_mutex_with_recovery()
 {
-    while (true) {
+    static constexpr int kMaxMutexTimeoutRetries = 5;
+    int retries = 0;
+    while (retries < kMaxMutexTimeoutRetries) {
         if (sem_wait_with_timeout(g_mutex_sem, 1) == 0)
             return 0;
         if (errno == ETIMEDOUT) {
             int rc = ensure_fresh_connection();
             if (rc != 0)
                 return rc;
+            ++retries;
             continue;
         }
         return -1;
     }
+    // Prevent indefinite hangs if semaphore stays stale/blocked.
+    return reconnect_after_server_restart();
 }
 
 /* --- Public API (extern "C") --- */
@@ -251,17 +256,22 @@ static int blocking_math(ipc_cmd_t cmd, int32_t a, int32_t b, int32_t *result)
     int submit_rc = submit_request(cmd, &payload, &slot_idx, nullptr);
     if (submit_rc != 0)
         return submit_rc;
-    while (true) {
+    static constexpr int kMaxSlotWaitTimeoutRetries = 8;
+    int retries = 0;
+    while (retries < kMaxSlotWaitTimeoutRetries) {
         if (sem_wait_with_timeout(g_slot_sems[slot_idx], 1) == 0)
             break;
         if (errno == ETIMEDOUT) {
             int rc = ensure_fresh_connection();
             if (rc != 0)
                 return rc;
+            ++retries;
             continue;
         }
         return -1;
     }
+    if (retries >= kMaxSlotWaitTimeoutRetries)
+        return reconnect_after_server_restart();
 
     int rc = lock_shared_mutex_with_recovery();
     if (rc != 0)
