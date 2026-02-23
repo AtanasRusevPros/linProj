@@ -13,12 +13,13 @@
 #   make docs         - generate Sphinx + Doxygen documentation
 #   make doxygen      - generate Doxygen documentation only
 #   make cppcheck     - run cppcheck static analysis
+#   make cppcheck-deep - run exhaustive cppcheck analysis
 #   make venv         - create Python venv and install pytest
 #   make help         - show this list
 
 BUILD_DIR := build
 
-.PHONY: all debug release sanitize reldbg clean rebuild test docs doxygen cppcheck venv help
+.PHONY: all debug release sanitize reldbg clean rebuild test docs doxygen cppcheck cppcheck-deep venv help
 
 all:
 	@cmake -B $(BUILD_DIR)
@@ -58,6 +59,9 @@ doxygen:
 cppcheck:
 	@cmake --build $(BUILD_DIR) --target cppcheck
 
+cppcheck-deep:
+	@cmake --build $(BUILD_DIR) --target cppcheck-deep
+
 venv:
 	@python3 -m venv .venv
 	@.venv/bin/pip install pytest sphinx breathe
@@ -76,5 +80,6 @@ help:
 	@echo "  docs      - generate Sphinx + Doxygen documentation"
 	@echo "  doxygen   - generate Doxygen documentation only"
 	@echo "  cppcheck  - run cppcheck static analysis"
+	@echo "  cppcheck-deep - run exhaustive cppcheck static analysis"
 	@echo "  venv      - create .venv and install Python dependencies"
 	@echo "  help      - show this help"

@@ -109,8 +109,21 @@ if(CPPCHECK)
         COMMENT "Running cppcheck static analysis"
         VERBATIM
     )
+    add_custom_target(cppcheck-deep
+        COMMAND ${CPPCHECK}
+            --enable=all
+            --std=c++17
+            --check-level=exhaustive
+            --suppress=missingIncludeSystem
+            --quiet
+            -I ${CMAKE_SOURCE_DIR}/include
+            -I ${CMAKE_SOURCE_DIR}/src
+            ${CMAKE_SOURCE_DIR}/src
+        COMMENT "Running cppcheck static analysis (exhaustive)"
+        VERBATIM
+    )
 else()
-    message(STATUS "cppcheck not found -- cppcheck target disabled")
+    message(STATUS "cppcheck not found -- cppcheck/cppcheck-deep targets disabled")
 endif()
 
 # --- Test target (pytest) ---

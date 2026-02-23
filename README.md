@@ -82,6 +82,7 @@ make test         # run pytest integration tests
 make docs         # generate Sphinx + Doxygen documentation
 make doxygen      # generate Doxygen documentation only
 make cppcheck     # run cppcheck static analysis
+make cppcheck-deep # run exhaustive cppcheck analysis (slower)
 make venv         # create .venv and install Python dependencies
 make help         # show all available targets
 ```
@@ -208,7 +209,12 @@ cmake --build build --target docs-sphinx
 ```bash
 # Install: sudo pacman -S cppcheck (Arch/Manjaro)
 cmake --build build --target cppcheck
+cmake --build build --target cppcheck-deep   # deeper path exploration, slower
 ```
+
+`cppcheck` is the fast/default profile. `cppcheck-deep` enables
+`--check-level=exhaustive` to explore more branch paths and can take
+significantly longer on larger code changes.
 
 ### Sanitizers (ASan + UBSan)
 
