@@ -48,9 +48,15 @@ rebuild:
 	@cmake --build $(BUILD_DIR) --clean-first
 
 test:
+	@python3 -m venv .venv
+	@.venv/bin/pip install -q pytest
+	@cmake -B $(BUILD_DIR)
 	@cmake --build $(BUILD_DIR) --target test
 
 docs:
+	@python3 -m venv .venv
+	@.venv/bin/pip install -q sphinx breathe
+	@cmake -B $(BUILD_DIR)
 	@cmake --build $(BUILD_DIR) --target docs-sphinx
 
 doxygen:

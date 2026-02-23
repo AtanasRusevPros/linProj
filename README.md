@@ -198,6 +198,9 @@ cmake --build build --target test
 .venv/bin/pytest -v tests/test_server_threads.py
 ```
 
+`make test` now bootstraps `.venv`, installs `pytest`, and re-runs CMake configure
+before building the test target, so it works in fresh clones without manual setup.
+
 The test setup uses two lifecycle models:
 - `tests/test_client_server.py` uses a session-scoped shared server fixture.
 - `tests/test_server_threads.py` self-manages server start/stop per test.
@@ -229,6 +232,9 @@ cmake --build build --target docs-doxygen
 cmake --build build --target docs-sphinx
 # Output: build/docs/sphinx/index.html
 ```
+
+`make docs` now bootstraps `.venv`, installs `sphinx` + `breathe`, and re-runs
+CMake configure before building `docs-sphinx`.
 
 ## Static Analysis
 
