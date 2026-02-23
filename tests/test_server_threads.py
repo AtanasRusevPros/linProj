@@ -24,6 +24,8 @@ IPC_NOT_READY = 1
 IPC_ERR_SERVER_RESTARTED = -2
 IPC_STATUS_OK = 0
 
+pytestmark = pytest.mark.self_managed_server
+
 
 def _cleanup_ipc():
     """Remove leftover IPC objects and lock file so a fresh server can start."""
@@ -41,13 +43,73 @@ def _cleanup_ipc():
         os.remove(LOCK_FILE)
 
 
+def _cleanup_orphan_servers():
+    """Best-effort kill for orphaned server instances from this workspace build."""
+    try:
+        ps_out = subprocess.check_output(["ps", "-eo", "pid=,args="], text=True)
+    except Exception:
+        return
+
+    target_prefix = f"{SERVER_BIN} "
+    target_exact = SERVER_BIN
+    pids = []
+    for line in ps_out.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        parts = line.split(None, 1)
+        if len(parts) != 2:
+            continue
+        pid_str, args = parts
+        if args == target_exact or args.startswith(target_prefix):
+            try:
+                pid = int(pid_str)
+            except ValueError:
+                continue
+            if pid != os.getpid():
+                pids.append(pid)
+
+    if not pids:
+        return
+
+    for pid in pids:
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+    time.sleep(0.2)
+    for pid in pids:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            continue
+        except PermissionError:
+            continue
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+    time.sleep(0.1)
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _module_server_guard():
+    _cleanup_orphan_servers()
+    _cleanup_ipc()
+    yield
+    _cleanup_orphan_servers()
+    _cleanup_ipc()
+
+
 def _start_server(*extra_args):
+    _cleanup_orphan_servers()
     _cleanup_ipc()
     proc = subprocess.Popen(
         [SERVER_BIN, *extra_args],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         cwd=BUILD_DIR,
+        start_new_session=True,
     )
     for _ in range(50):
         if os.path.exists(SHM_PATH):
@@ -58,12 +120,32 @@ def _start_server(*extra_args):
 
 
 def _stop_server(proc):
-    proc.send_signal(signal.SIGINT)
+    if proc.poll() is not None:
+        try:
+            stdout, _ = proc.communicate(timeout=0.1)
+        except Exception:
+            stdout = b""
+        return stdout.decode()
+
+    try:
+        os.killpg(proc.pid, signal.SIGINT)
+    except ProcessLookupError:
+        pass
     try:
         stdout, _ = proc.communicate(timeout=5)
     except subprocess.TimeoutExpired:
-        proc.kill()
-        stdout, _ = proc.communicate()
+        try:
+            os.killpg(proc.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        try:
+            stdout, _ = proc.communicate(timeout=2)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            stdout, _ = proc.communicate(timeout=2)
     return stdout.decode()
 
 
@@ -301,32 +383,32 @@ class TestStatusReport:
             _cleanup_ipc()
 
 
-# class TestSlotExhaustion:
-#     """Test behavior when all shared-memory slots are occupied."""
+class TestSlotExhaustion:
+    """Test behavior when all shared-memory slots are occupied."""
 
-#     def test_async_submit_fails_when_slots_full(self, capfd):
-#         """17th async request should fail when 16 slots are already occupied."""
-#         proc = _start_server("-t", "2", "--shutdown=drain")
-#         lib = _load_ipc_lib()
-#         try:
-#             assert lib.ipc_init() == 0
+    def test_async_submit_fails_when_slots_full(self, capfd):
+        """17th async request should fail when 16 slots are already occupied."""
+        proc = _start_server("-t", "2", "--shutdown=drain")
+        lib = _load_ipc_lib()
+        try:
+            assert lib.ipc_init() == 0
 
-#             for _ in range(IPC_MAX_SLOTS):
-#                 req_id = ctypes.c_uint64()
-#                 rc = lib.ipc_concat(b"a", b"b", ctypes.byref(req_id))
-#                 assert rc == 0
+            for _ in range(IPC_MAX_SLOTS):
+                req_id = ctypes.c_uint64()
+                rc = lib.ipc_concat(b"a", b"b", ctypes.byref(req_id))
+                assert rc == 0
 
-#             extra_id = ctypes.c_uint64()
-#             rc = lib.ipc_concat(b"x", b"y", ctypes.byref(extra_id))
-#             assert rc == -1
+            extra_id = ctypes.c_uint64()
+            rc = lib.ipc_concat(b"x", b"y", ctypes.byref(extra_id))
+            assert rc == -1
 
-#             _, err = capfd.readouterr()
-#             assert "no free slots" in err.lower()
-#         finally:
-#             lib.ipc_cleanup()
-#             if proc.poll() is None:
-#                 _stop_server(proc)
-#             _cleanup_ipc()
+            _, err = capfd.readouterr()
+            assert "no free slots" in err.lower()
+        finally:
+            lib.ipc_cleanup()
+            if proc.poll() is None:
+                _stop_server(proc)
+            _cleanup_ipc()
 
 
 class TestRestartRecovery:

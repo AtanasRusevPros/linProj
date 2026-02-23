@@ -138,11 +138,13 @@ if(NOT PYTEST)
 endif()
 if(PYTEST)
     add_custom_target(test
-        COMMAND ${PYTEST} ${CMAKE_SOURCE_DIR}/tests -v
+        COMMAND ${PYTEST} ${CMAKE_SOURCE_DIR}/tests/test_client_server.py -v
+            --tb=short
+        COMMAND ${PYTEST} ${CMAKE_SOURCE_DIR}/tests/test_server_threads.py -v
             --tb=short
         WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
         DEPENDS server client1 client2 ipc
-        COMMENT "Running pytest integration tests"
+        COMMENT "Running pytest suites (isolated server lifecycle)"
         VERBATIM
     )
 else()

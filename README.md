@@ -192,9 +192,25 @@ cmake --build build --target test
 
 # Or directly
 .venv/bin/pytest tests -v
+
+# Run isolated suites explicitly
+.venv/bin/pytest -v tests/test_client_server.py
+.venv/bin/pytest -v tests/test_server_threads.py
 ```
 
-The test suite automatically starts and stops the server process.
+The test setup uses two lifecycle models:
+- `tests/test_client_server.py` uses a session-scoped shared server fixture.
+- `tests/test_server_threads.py` self-manages server start/stop per test.
+
+`make test` runs these suites in separate sequential pytest invocations to avoid
+cross-suite interference on global POSIX IPC names.
+
+If a prior interrupted run left orphan server processes, recover with:
+
+```bash
+pkill -f "/home/$USER/linProj/.*/build/server|/home/$USER/linProj/build/server" || true
+rm -f /dev/shm/ipc_shm /dev/shm/sem.ipc_* /tmp/ipc_server.lock
+```
 
 ## Documentation
 
