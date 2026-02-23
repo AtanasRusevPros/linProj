@@ -28,6 +28,9 @@ extern "C" {
 /** Return code from ipc_get_result() when the result is not yet available. */
 #define IPC_NOT_READY       1
 
+/** Return code when server restart is detected and request context was invalidated. */
+#define IPC_ERR_SERVER_RESTARTED -2
+
 /* --- IPC object names (POSIX shared memory and semaphores) --- */
 
 #define IPC_SHM_NAME        "/ipc_shm"
@@ -125,6 +128,7 @@ typedef struct {
  * @brief Layout of the entire shared memory region.
  */
 typedef struct {
+    uint64_t    server_generation;
     uint64_t    next_request_id;
     MessageSlot slots[IPC_MAX_SLOTS];
 } SharedMemoryLayout;

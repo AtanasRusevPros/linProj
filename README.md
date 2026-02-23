@@ -130,6 +130,12 @@ The server creates shared memory and semaphores, then waits for requests.
 The startup banner shows the detected core count, threads-per-pool, and
 shutdown mode. Press Ctrl+C (SIGINT) or send SIGTERM for shutdown.
 
+**Restart recovery model:** The shared memory contains a `server_generation`
+counter that changes on every server startup. Clients detect generation
+changes and automatically reconnect their shared-memory/semaphore handles.
+If a restart invalidates an in-flight request, library calls return
+`IPC_ERR_SERVER_RESTARTED`.
+
 **Shutdown modes:**
 - `drain` (default) -- all queued tasks finish before the server exits. On
   shutdown the server reports how many tasks remain.
@@ -155,12 +161,18 @@ cd build
 ./client1
 ```
 
+Client 1 behavior on restart detection:
+- Blocking calls fail fast with a message (user retries manually).
+- Pending async requests are re-submitted automatically after reconnect.
+
 ### Run Client 2 (subtract, divide, search)
 
 ```bash
 cd build
 ./client2
 ```
+
+Client 2 follows the same restart policy as Client 1.
 
 ## Testing
 
@@ -230,6 +242,9 @@ cmake --build build --target test
   branch depth limits (not actual defects).
 - **Compiler warnings** (`-Wall -Wextra -Wpedantic`): Clean -- zero warnings.
 - **ASan/UBSan**: No runtime errors detected during test execution.
+- **Restart caveat**: In-flight async requests are not durable. After restart,
+  clients can re-submit pending async operations, but work already in progress
+  at crash time is not recovered from disk.
 
 ## Project Structure
 

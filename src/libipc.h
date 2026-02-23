@@ -21,6 +21,8 @@ extern "C" {
  *
  * Must be called before any other ipc_ function. The server must already
  * be running (it creates the shared memory segment).
+ * If the server restarts while a client is running, calls may return
+ * IPC_ERR_SERVER_RESTARTED and the caller should retry as appropriate.
  *
  * @return 0 on success, -1 on failure.
  */
@@ -46,7 +48,8 @@ void ipc_cleanup(void);
  * @param[in]  a       First operand.
  * @param[in]  b       Second operand.
  * @param[out] result  Pointer to store the sum.
- * @return 0 on success, -1 on error.
+ * @return 0 on success, -1 on error, IPC_ERR_SERVER_RESTARTED if the server
+ *         restarted and this request context was invalidated.
  */
 int ipc_add(int32_t a, int32_t b, int32_t *result);
 
@@ -56,7 +59,8 @@ int ipc_add(int32_t a, int32_t b, int32_t *result);
  * @param[in]  a       First operand.
  * @param[in]  b       Second operand.
  * @param[out] result  Pointer to store (a - b).
- * @return 0 on success, -1 on error.
+ * @return 0 on success, -1 on error, IPC_ERR_SERVER_RESTARTED if the server
+ *         restarted and this request context was invalidated.
  */
 int ipc_subtract(int32_t a, int32_t b, int32_t *result);
 
@@ -73,7 +77,8 @@ int ipc_subtract(int32_t a, int32_t b, int32_t *result);
  * @param[in]  a           First operand.
  * @param[in]  b           Second operand.
  * @param[out] request_id  Pointer to store the assigned request ID.
- * @return 0 on success, -1 on error.
+ * @return 0 on success, -1 on error, IPC_ERR_SERVER_RESTARTED if the server
+ *         restarted and this request context was invalidated.
  */
 int ipc_multiply(int32_t a, int32_t b, uint64_t *request_id);
 
@@ -86,7 +91,8 @@ int ipc_multiply(int32_t a, int32_t b, uint64_t *request_id);
  * @param[in]  a           Dividend.
  * @param[in]  b           Divisor.
  * @param[out] request_id  Pointer to store the assigned request ID.
- * @return 0 on success, -1 on error.
+ * @return 0 on success, -1 on error, IPC_ERR_SERVER_RESTARTED if the server
+ *         restarted and this request context was invalidated.
  */
 int ipc_divide(int32_t a, int32_t b, uint64_t *request_id);
 
@@ -98,7 +104,8 @@ int ipc_divide(int32_t a, int32_t b, uint64_t *request_id);
  * @param[in]  s1          First string.
  * @param[in]  s2          Second string.
  * @param[out] request_id  Pointer to store the assigned request ID.
- * @return 0 on success, -1 on error (e.g., string too long or empty).
+ * @return 0 on success, -1 on error (e.g., string too long or empty),
+ *         IPC_ERR_SERVER_RESTARTED if the server restarted.
  */
 int ipc_concat(const char *s1, const char *s2, uint64_t *request_id);
 
@@ -112,7 +119,8 @@ int ipc_concat(const char *s1, const char *s2, uint64_t *request_id);
  * @param[in]  haystack    The string to search in (1..16 chars).
  * @param[in]  needle      The substring to find (1..16 chars).
  * @param[out] request_id  Pointer to store the assigned request ID.
- * @return 0 on success, -1 on error.
+ * @return 0 on success, -1 on error, IPC_ERR_SERVER_RESTARTED if the server
+ *         restarted and this request context was invalidated.
  */
 int ipc_search(const char *haystack, const char *needle, uint64_t *request_id);
 
@@ -123,7 +131,8 @@ int ipc_search(const char *haystack, const char *needle, uint64_t *request_id);
  * @param[out] result      Pointer to store the response payload.
  * @param[out] status      Pointer to store the response status code.
  * @return 0 if result is ready, IPC_NOT_READY if still processing,
- *         -1 on error (e.g., invalid request_id).
+ *         IPC_ERR_SERVER_RESTARTED if the server restarted and old request IDs
+ *         were invalidated, -1 on other errors.
  */
 int ipc_get_result(uint64_t request_id, ResponsePayload *result,
                    ipc_status_t *status);

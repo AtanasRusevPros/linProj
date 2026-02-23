@@ -11,6 +11,7 @@
 #include <semaphore.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
+#include <time.h>
 #include <unistd.h>
 
 /* --- Internal state (per-process) --- */
@@ -20,12 +21,85 @@ static sem_t *g_mutex_sem = nullptr;
 static sem_t *g_server_sem = nullptr;
 static sem_t *g_slot_sems[IPC_MAX_SLOTS] = {};
 static int    g_shm_fd = -1;
+static uint64_t g_known_generation = 0;
 
 /* --- Helper: build slot semaphore name --- */
 
 static void slot_sem_name(int index, char *buf, size_t buflen)
 {
     snprintf(buf, buflen, "%s%d", IPC_SLOT_SEM_PREFIX, index);
+}
+
+static int sem_wait_with_timeout(sem_t *sem, int timeout_sec)
+{
+    while (true) {
+        timespec ts{};
+        if (clock_gettime(CLOCK_REALTIME, &ts) != 0)
+            return -1;
+        ts.tv_sec += timeout_sec;
+
+        if (sem_timedwait(sem, &ts) == 0)
+            return 0;
+        if (errno == EINTR)
+            continue;
+        return -1;
+    }
+}
+
+static bool shm_object_replaced()
+{
+    if (g_shm_fd < 0)
+        return false;
+
+    int live_fd = shm_open(IPC_SHM_NAME, O_RDWR, 0666);
+    if (live_fd < 0)
+        return false;
+
+    struct stat cur{};
+    struct stat live{};
+    bool replaced = false;
+    if (fstat(g_shm_fd, &cur) == 0 && fstat(live_fd, &live) == 0) {
+        replaced = (cur.st_dev != live.st_dev) || (cur.st_ino != live.st_ino);
+    }
+    close(live_fd);
+    return replaced;
+}
+
+static int reconnect_after_server_restart()
+{
+    ipc_cleanup();
+    if (ipc_init() == 0)
+        return IPC_ERR_SERVER_RESTARTED;
+    return -1;
+}
+
+static int ensure_fresh_connection()
+{
+    if (!g_shm)
+        return -1;
+
+    if (shm_object_replaced())
+        return reconnect_after_server_restart();
+
+    if (g_shm->server_generation != g_known_generation)
+        return reconnect_after_server_restart();
+
+    return 0;
+}
+
+static int lock_shared_mutex_with_recovery()
+{
+    while (true) {
+        if (sem_wait_with_timeout(g_mutex_sem, 1) == 0)
+            return 0;
+        if (errno == ETIMEDOUT) {
+            int rc = ensure_fresh_connection();
+            if (rc != 0)
+                return rc;
+            continue;
+        }
+        return -1;
+    }
 }
 
 /* --- Public API (extern "C") --- */
@@ -71,6 +145,7 @@ extern "C" int ipc_init(void)
         }
     }
 
+    g_known_generation = g_shm->server_generation;
     return 0;
 
 fail:
@@ -102,6 +177,7 @@ extern "C" void ipc_cleanup(void)
         close(g_shm_fd);
         g_shm_fd = -1;
     }
+    g_known_generation = 0;
 }
 
 /* --- Internal helpers --- */
@@ -126,7 +202,18 @@ static int validate_string(const char *s)
 static int submit_request(ipc_cmd_t cmd, const RequestPayload *payload,
                           int *out_slot, uint64_t *out_id)
 {
-    sem_wait(g_mutex_sem);
+    int rc = ensure_fresh_connection();
+    if (rc != 0)
+        return rc;
+
+    rc = lock_shared_mutex_with_recovery();
+    if (rc != 0)
+        return rc;
+
+    if (g_shm->server_generation != g_known_generation) {
+        sem_post(g_mutex_sem);
+        return reconnect_after_server_restart();
+    }
 
     int idx = find_free_slot();
     if (idx < 0) {
@@ -161,12 +248,24 @@ static int blocking_math(ipc_cmd_t cmd, int32_t a, int32_t b, int32_t *result)
     payload.math.b = b;
 
     int slot_idx = -1;
-    if (submit_request(cmd, &payload, &slot_idx, nullptr) != 0)
+    int submit_rc = submit_request(cmd, &payload, &slot_idx, nullptr);
+    if (submit_rc != 0)
+        return submit_rc;
+    while (true) {
+        if (sem_wait_with_timeout(g_slot_sems[slot_idx], 1) == 0)
+            break;
+        if (errno == ETIMEDOUT) {
+            int rc = ensure_fresh_connection();
+            if (rc != 0)
+                return rc;
+            continue;
+        }
         return -1;
+    }
 
-    sem_wait(g_slot_sems[slot_idx]);
-
-    sem_wait(g_mutex_sem);
+    int rc = lock_shared_mutex_with_recovery();
+    if (rc != 0)
+        return rc;
     MessageSlot *slot = &g_shm->slots[slot_idx];
     *result = slot->response.math_result;
     int ret = (slot->status == IPC_STATUS_OK) ? 0 : -1;
@@ -247,7 +346,18 @@ extern "C" int ipc_get_result(uint64_t request_id, ResponsePayload *result,
 {
     if (!result || !status) return -1;
 
-    sem_wait(g_mutex_sem);
+    int rc = ensure_fresh_connection();
+    if (rc != 0)
+        return rc;
+
+    rc = lock_shared_mutex_with_recovery();
+    if (rc != 0)
+        return rc;
+
+    if (g_shm->server_generation != g_known_generation) {
+        sem_post(g_mutex_sem);
+        return reconnect_after_server_restart();
+    }
 
     for (int i = 0; i < IPC_MAX_SLOTS; ++i) {
         MessageSlot *slot = &g_shm->slots[i];

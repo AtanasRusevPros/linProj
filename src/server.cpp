@@ -113,6 +113,7 @@ private:
 /* ================================================================== */
 
 static const char *LOCK_FILE = "/tmp/ipc_server.lock";
+static const char *GENERATION_FILE = "/tmp/ipc_server.generation";
 
 static std::atomic<bool> g_running{true};
 static std::atomic<bool> g_status_requested{false};
@@ -123,6 +124,36 @@ static int g_shm_fd = -1;
 static sem_t *g_mutex_sem = nullptr;
 static sem_t *g_server_sem = nullptr;
 static sem_t *g_slot_sems[IPC_MAX_SLOTS] = {};
+
+static uint64_t next_server_generation()
+{
+    int fd = open(GENERATION_FILE, O_CREAT | O_RDWR, 0666);
+    if (fd < 0) {
+        return static_cast<uint64_t>(time(nullptr));
+    }
+
+    if (flock(fd, LOCK_EX) < 0) {
+        close(fd);
+        return static_cast<uint64_t>(time(nullptr));
+    }
+
+    uint64_t gen = 0;
+    ssize_t n = read(fd, &gen, sizeof(gen));
+    if (n != static_cast<ssize_t>(sizeof(gen))) {
+        gen = 0;
+    }
+    ++gen;
+
+    lseek(fd, 0, SEEK_SET);
+    ssize_t written = write(fd, &gen, sizeof(gen));
+    if (written == static_cast<ssize_t>(sizeof(gen))) {
+        ftruncate(fd, sizeof(gen));
+    }
+
+    flock(fd, LOCK_UN);
+    close(fd);
+    return gen;
+}
 
 static size_t default_threads_per_pool()
 {
@@ -350,7 +381,9 @@ int main(int argc, char *argv[])
         return 1;
     }
 
+    uint64_t server_generation = next_server_generation();
     memset(g_shm, 0, sizeof(SharedMemoryLayout));
+    g_shm->server_generation = server_generation;
     g_shm->next_request_id = 1;
 
     /* --- Create semaphores --- */
@@ -419,9 +452,10 @@ int main(int argc, char *argv[])
     ThreadPool math_pool(threads_per_pool, process_math);
     ThreadPool string_pool(threads_per_pool, process_string);
 
-    printf("Server started. PID=%d, cores=%u, threads/pool=%zu, shutdown=%s. "
+    printf("Server started. PID=%d, generation=%llu, cores=%u, threads/pool=%zu, shutdown=%s. "
            "Waiting for requests...\n",
-           getpid(), std::thread::hardware_concurrency(), threads_per_pool,
+           getpid(), static_cast<unsigned long long>(server_generation),
+           std::thread::hardware_concurrency(), threads_per_pool,
            (g_shutdown_mode == ShutdownMode::Drain) ? "drain" : "immediate");
     fflush(stdout);
 

@@ -23,14 +23,79 @@ struct PendingRequest {
     uint64_t    id;
     ipc_cmd_t   cmd;
     std::string description;
+    int32_t     a = 0;
+    int32_t     b = 0;
+    std::string s1;
+    std::string s2;
 };
 
 static ipc_get_result_fn fn_get_result = nullptr;
+static ipc_divide_fn fn_divide = nullptr;
+static ipc_search_fn fn_search = nullptr;
+
+static int resubmit_pending(PendingRequest &req)
+{
+    uint64_t new_id = 0;
+    int rc = -1;
+    if (req.cmd == IPC_CMD_DIV) {
+        rc = fn_divide(req.a, req.b, &new_id);
+    } else if (req.cmd == IPC_CMD_SEARCH) {
+        rc = fn_search(req.s2.c_str(), req.s1.c_str(), &new_id);
+    }
+    if (rc == 0)
+        req.id = new_id;
+    return rc;
+}
+
+static void retry_pending_after_restart(std::vector<PendingRequest> &pending)
+{
+    if (pending.empty())
+        return;
+
+    for (auto &req : pending) {
+        req.id = 0;
+    }
+
+    printf("\nNotice: server restart detected. Re-submitting %zu async request(s)...\n",
+           pending.size());
+    auto it = pending.begin();
+    while (it != pending.end()) {
+        int rc = resubmit_pending(*it);
+        if (rc == 0) {
+            printf("Re-submitted [%s], new request ID: %lu\n",
+                   it->description.c_str(), static_cast<unsigned long>(it->id));
+            ++it;
+        } else if (rc == IPC_ERR_SERVER_RESTARTED) {
+            printf("Server is still restarting; pending requests remain queued for retry.\n");
+            ++it;
+            break;
+        } else {
+            printf("Failed to re-submit [%s]; dropping this pending request.\n",
+                   it->description.c_str());
+            it = pending.erase(it);
+        }
+    }
+}
 
 static void check_pending(std::vector<PendingRequest> &pending)
 {
     auto it = pending.begin();
     while (it != pending.end()) {
+        if (it->id == 0) {
+            int rc = resubmit_pending(*it);
+            if (rc == 0) {
+                printf("Re-submitted [%s], new request ID: %lu\n",
+                       it->description.c_str(), static_cast<unsigned long>(it->id));
+            } else if (rc != IPC_ERR_SERVER_RESTARTED) {
+                printf("Failed to re-submit [%s]; dropping this pending request.\n",
+                       it->description.c_str());
+                it = pending.erase(it);
+                continue;
+            }
+            ++it;
+            continue;
+        }
+
         ResponsePayload result;
         ipc_status_t status;
         int rc = fn_get_result(it->id, &result, &status);
@@ -55,12 +120,31 @@ static void check_pending(std::vector<PendingRequest> &pending)
             it = pending.erase(it);
         } else if (rc == IPC_NOT_READY) {
             ++it;
+        } else if (rc == IPC_ERR_SERVER_RESTARTED) {
+            retry_pending_after_restart(pending);
+            return;
         } else {
             printf("Error: request %lu not found.\n",
                    static_cast<unsigned long>(it->id));
             it = pending.erase(it);
         }
     }
+}
+
+static bool pre_menu_restart_probe(std::vector<PendingRequest> &pending)
+{
+    ResponsePayload probe_result{};
+    ipc_status_t probe_status = IPC_STATUS_OK;
+    int rc = fn_get_result(0, &probe_result, &probe_status);
+    if (rc == IPC_ERR_SERVER_RESTARTED) {
+        if (pending.empty()) {
+            printf("\nNotice: server restart detected. Reconnected to fresh IPC state.\n");
+        } else {
+            retry_pending_after_restart(pending);
+        }
+        return true;
+    }
+    return false;
 }
 
 int main()
@@ -72,12 +156,12 @@ int main()
         return 1;
     }
 
-    auto fn_init     = reinterpret_cast<ipc_init_fn>(dlsym(handle, "ipc_init"));
-    auto fn_cleanup  = reinterpret_cast<ipc_cleanup_fn>(dlsym(handle, "ipc_cleanup"));
-    auto fn_subtract = reinterpret_cast<ipc_subtract_fn>(dlsym(handle, "ipc_subtract"));
-    auto fn_divide   = reinterpret_cast<ipc_divide_fn>(dlsym(handle, "ipc_divide"));
-    auto fn_search   = reinterpret_cast<ipc_search_fn>(dlsym(handle, "ipc_search"));
-    fn_get_result    = reinterpret_cast<ipc_get_result_fn>(dlsym(handle, "ipc_get_result"));
+    auto fn_init      = reinterpret_cast<ipc_init_fn>(dlsym(handle, "ipc_init"));
+    auto fn_cleanup   = reinterpret_cast<ipc_cleanup_fn>(dlsym(handle, "ipc_cleanup"));
+    auto fn_subtract  = reinterpret_cast<ipc_subtract_fn>(dlsym(handle, "ipc_subtract"));
+    fn_divide         = reinterpret_cast<ipc_divide_fn>(dlsym(handle, "ipc_divide"));
+    fn_search         = reinterpret_cast<ipc_search_fn>(dlsym(handle, "ipc_search"));
+    fn_get_result     = reinterpret_cast<ipc_get_result_fn>(dlsym(handle, "ipc_get_result"));
 
     if (!fn_init || !fn_cleanup || !fn_subtract || !fn_divide ||
         !fn_search || !fn_get_result) {
@@ -97,6 +181,8 @@ int main()
 
     while (running) {
         check_pending(pending);
+        if (pre_menu_restart_probe(pending))
+            continue;
 
         printf("\n1. Subtract 2 numbers        (blocking)\n"
                "2. Divide 2 numbers          (non-blocking)\n"
@@ -129,9 +215,13 @@ int main()
 
             printf("\nSending request...\n");
             int32_t result;
-            if (fn_subtract(a, b, &result) == 0) {
+            int rc = fn_subtract(a, b, &result);
+            if (rc == 0) {
                 printf("Receiving response...\n");
                 printf("Result is %d!\n", result);
+            } else if (rc == IPC_ERR_SERVER_RESTARTED) {
+                printf("Server restarted; blocking request was not retried. "
+                       "Please run the command again.\n");
             } else {
                 printf("Error: subtract operation failed.\n");
             }
@@ -152,9 +242,13 @@ int main()
             snprintf(desc, sizeof(desc), "%d/%d", a, b);
             printf("\nSending request (%s) ... ", desc);
             fflush(stdout);
-            if (fn_divide(a, b, &req_id) == 0) {
+            int rc = fn_divide(a, b, &req_id);
+            if (rc == 0) {
                 printf("Request ID: %lu\n", static_cast<unsigned long>(req_id));
-                pending.push_back({req_id, IPC_CMD_DIV, desc});
+                pending.push_back({req_id, IPC_CMD_DIV, desc, a, b, "", ""});
+            } else if (rc == IPC_ERR_SERVER_RESTARTED) {
+                printf("Server restarted while submitting; reconnected. "
+                       "Please retry this command.\n");
             } else {
                 printf("Error: divide operation failed.\n");
             }
@@ -177,9 +271,13 @@ int main()
             printf("\nSending request %s ... ", desc);
             fflush(stdout);
             /* Note: search(haystack, needle) -- s2 is the string, s1 is the substring */
-            if (fn_search(s2, s1, &req_id) == 0) {
+            int rc = fn_search(s2, s1, &req_id);
+            if (rc == 0) {
                 printf("Request ID: %lu\n", static_cast<unsigned long>(req_id));
-                pending.push_back({req_id, IPC_CMD_SEARCH, desc});
+                pending.push_back({req_id, IPC_CMD_SEARCH, desc, 0, 0, s1, s2});
+            } else if (rc == IPC_ERR_SERVER_RESTARTED) {
+                printf("Server restarted while submitting; reconnected. "
+                       "Please retry this command.\n");
             } else {
                 printf("Error: search failed (strings must be 1..16 chars).\n");
             }

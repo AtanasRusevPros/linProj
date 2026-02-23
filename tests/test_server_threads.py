@@ -15,10 +15,14 @@ import pytest
 
 BUILD_DIR = os.path.join(os.path.dirname(__file__), "..", "build")
 SERVER_BIN = os.path.join(BUILD_DIR, "server")
+CLIENT1_BIN = os.path.join(BUILD_DIR, "client1")
 SHM_PATH = "/dev/shm/ipc_shm"
 LOCK_FILE = "/tmp/ipc_server.lock"
 LIBIPC_SO = os.path.join(BUILD_DIR, "libipc.so")
 IPC_MAX_SLOTS = 16
+IPC_NOT_READY = 1
+IPC_ERR_SERVER_RESTARTED = -2
+IPC_STATUS_OK = 0
 
 
 def _cleanup_ipc():
@@ -63,6 +67,11 @@ def _stop_server(proc):
     return stdout.decode()
 
 
+def _restart_server(proc, *extra_args):
+    _stop_server(proc)
+    return _start_server(*extra_args)
+
+
 def _load_ipc_lib():
     """Load libipc and configure function signatures used by tests."""
     lib = ctypes.CDLL(LIBIPC_SO)
@@ -80,6 +89,16 @@ def _load_ipc_lib():
         ctypes.c_char_p, ctypes.c_char_p, ctypes.POINTER(ctypes.c_uint64)
     ]
     lib.ipc_concat.restype = ctypes.c_int
+
+    lib.ipc_multiply.argtypes = [
+        ctypes.c_int32, ctypes.c_int32, ctypes.POINTER(ctypes.c_uint64)
+    ]
+    lib.ipc_multiply.restype = ctypes.c_int
+
+    lib.ipc_get_result.argtypes = [
+        ctypes.c_uint64, ctypes.c_void_p, ctypes.POINTER(ctypes.c_int)
+    ]
+    lib.ipc_get_result.restype = ctypes.c_int
 
     return lib
 
@@ -309,6 +328,71 @@ class TestSlotExhaustion:
                 _stop_server(proc)
             _cleanup_ipc()
 
+
+class TestRestartRecovery:
+    """Test generation-based recovery behavior after server restart."""
+
+    def test_sync_call_fails_fast_once_after_restart(self):
+        """First sync call after restart should return restart code, then recover."""
+        proc = _start_server("-t", "2", "--shutdown=drain")
+        lib = _load_ipc_lib()
+        try:
+            assert lib.ipc_init() == 0
+            proc = _restart_server(proc, "-t", "2", "--shutdown=drain")
+
+            out = ctypes.c_int32()
+            rc = lib.ipc_add(1, 2, ctypes.byref(out))
+            assert rc == IPC_ERR_SERVER_RESTARTED
+
+            rc = lib.ipc_add(1, 2, ctypes.byref(out))
+            assert rc == 0
+            assert out.value == 3
+        finally:
+            lib.ipc_cleanup()
+            if proc.poll() is None:
+                _stop_server(proc)
+            _cleanup_ipc()
+
+    def test_async_request_can_be_retried_after_restart(self):
+        """Old async request ID should invalidate; a re-submission should succeed."""
+        proc = _start_server("-t", "2", "--shutdown=drain")
+        lib = _load_ipc_lib()
+        try:
+            assert lib.ipc_init() == 0
+
+            old_id = ctypes.c_uint64()
+            assert lib.ipc_multiply(6, 7, ctypes.byref(old_id)) == 0
+
+            proc = _restart_server(proc, "-t", "2", "--shutdown=drain")
+
+            result_buf = (ctypes.c_byte * 64)()
+            status = ctypes.c_int()
+            rc = lib.ipc_get_result(old_id.value, result_buf, ctypes.byref(status))
+            assert rc == IPC_ERR_SERVER_RESTARTED
+
+            new_id = ctypes.c_uint64()
+            assert lib.ipc_multiply(6, 7, ctypes.byref(new_id)) == 0
+
+            done = False
+            for _ in range(30):
+                rc = lib.ipc_get_result(new_id.value, result_buf, ctypes.byref(status))
+                if rc == 0:
+                    math_result = ctypes.cast(
+                        result_buf, ctypes.POINTER(ctypes.c_int32)
+                    ).contents.value
+                    assert status.value == IPC_STATUS_OK
+                    assert math_result == 42
+                    done = True
+                    break
+                assert rc == IPC_NOT_READY
+                time.sleep(0.1)
+            assert done
+        finally:
+            lib.ipc_cleanup()
+            if proc.poll() is None:
+                _stop_server(proc)
+            _cleanup_ipc()
+
     def test_sync_submit_fails_when_slots_full(self, capfd):
         """A blocking request should fail immediately if no slot is available."""
         proc = _start_server("-t", "2", "--shutdown=drain")
@@ -331,4 +415,96 @@ class TestSlotExhaustion:
             lib.ipc_cleanup()
             if proc.poll() is None:
                 _stop_server(proc)
+            _cleanup_ipc()
+
+
+class TestClientRestartUx:
+    """Test client-visible restart recovery behavior."""
+
+    def test_client1_pre_menu_probe_notice_without_pending(self):
+        """Client1 should print reconnect notice via pre-menu probe when no pending requests."""
+        server = _start_server("-t", "2", "--shutdown=drain")
+        env = os.environ.copy()
+        env["LD_LIBRARY_PATH"] = BUILD_DIR
+        client = subprocess.Popen(
+            [CLIENT1_BIN],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            cwd=BUILD_DIR,
+            env=env,
+        )
+        try:
+            # Run one blocking command so client reaches menu again.
+            client.stdin.write(b"1\n2\n3\n")
+            client.stdin.flush()
+            time.sleep(0.5)
+
+            # Restart server while client is still running.
+            server = _restart_server(server, "-t", "2", "--shutdown=drain")
+            time.sleep(0.3)
+
+            # Trigger a loop turn and then exit.
+            client.stdin.write(b"4\n5\n")
+            client.stdin.flush()
+
+            stdout, stderr = client.communicate(timeout=15)
+            out = (stdout.decode() + stderr.decode())
+            assert "reconnected to fresh ipc state" in out.lower()
+            assert "client 1 exiting" in out.lower()
+        finally:
+            if client.poll() is None:
+                client.kill()
+                client.wait()
+            if server.poll() is None:
+                _stop_server(server)
+            _cleanup_ipc()
+
+    def test_client1_async_resubmit_after_restart(self):
+        """Client1 should auto-resubmit pending async work after restart."""
+        server = _start_server("-t", "2", "--shutdown=drain")
+        env = os.environ.copy()
+        env["LD_LIBRARY_PATH"] = BUILD_DIR
+        client = subprocess.Popen(
+            [CLIENT1_BIN],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            cwd=BUILD_DIR,
+            env=env,
+        )
+        try:
+            # Submit async multiply.
+            client.stdin.write(b"2\n7\n8\n")
+            client.stdin.flush()
+            time.sleep(0.4)
+
+            # Restart server before collecting result.
+            server = _restart_server(server, "-t", "2", "--shutdown=drain")
+            time.sleep(0.3)
+
+            # First check triggers restart handling and re-submit.
+            client.stdin.write(b"4\n")
+            client.stdin.flush()
+            time.sleep(0.5)
+
+            # Second check should fetch completed result after 2s server delay.
+            client.stdin.write(b"4\n")
+            client.stdin.flush()
+            time.sleep(2.5)
+
+            client.stdin.write(b"4\n5\n")
+            client.stdin.flush()
+
+            stdout, stderr = client.communicate(timeout=20)
+            out = (stdout.decode() + stderr.decode())
+            assert "re-submitting" in out.lower()
+            assert "re-submitted" in out.lower()
+            assert "result is 56!" in out.lower()
+        finally:
+            if client.poll() is None:
+                client.kill()
+                client.wait()
+            if server.poll() is None:
+                _stop_server(server)
             _cleanup_ipc()
