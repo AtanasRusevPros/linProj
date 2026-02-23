@@ -45,8 +45,10 @@ The server uses `std::thread` which is the C++17 standard wrapper over POSIX
 pthreads on Linux, linked explicitly via `-lpthread` (`Threads::Threads` in CMake).
 
 Two separate thread pools (math and string) dispatch work from the main
-dispatcher thread. Each pool has 2 worker threads, enabling concurrent processing
-of multiple requests within each category.
+dispatcher thread. The number of worker threads per pool is **auto-detected**
+at startup based on the CPU core count: `(cores - 1) / 2`, reserving one core
+for the dispatcher. This can be overridden with the `-t N` command-line flag
+(see [Running](#running)).
 
 ### Non-Blocking Demonstration
 
@@ -66,23 +68,38 @@ before multiply results, showing out-of-order completion.
 
 ### Build Commands
 
+A wrapper `Makefile` provides shortcuts for the most common commands:
+
 ```bash
-# Configure
+make              # incremental build (default configuration)
+make debug        # Debug build (-g -O0, for GDB)
+make release      # Release build (-O3, for production)
+make sanitize     # Debug + AddressSanitizer + UBSan
+make reldbg       # RelWithDebInfo (-O2 -g, for profiling)
+make clean        # remove build artifacts
+make rebuild      # clean + rebuild
+make test         # run pytest integration tests
+make docs         # generate Sphinx + Doxygen documentation
+make doxygen      # generate Doxygen documentation only
+make cppcheck     # run cppcheck static analysis
+make venv         # create .venv and install Python dependencies
+make help         # show all available targets
+```
+
+Or use CMake directly:
+
+```bash
 cmake -B build
-
-# Incremental build
 cmake --build build
-
-# Clean rebuild (equivalent of make clean all)
-cmake --build build --clean-first
-# Or from the build directory:
-cd build && make clean all
+cmake --build build --clean-first   # clean rebuild
 ```
 
 ### Build with Sanitizers
 
 ```bash
-cmake -B build -DENABLE_SANITIZERS=ON
+make sanitize
+# Or directly:
+cmake -B build -DCMAKE_BUILD_TYPE=Debug -DENABLE_SANITIZERS=ON
 cmake --build build
 ```
 
@@ -100,11 +117,35 @@ All outputs are placed in `build/`:
 
 ```bash
 cd build
-./server
+./server                          # auto-detect threads, drain on shutdown
+./server -t 4                     # force 4 threads per pool
+./server -t 1                     # single-threaded pools (for GDB debugging)
+./server --shutdown=drain         # finish queued tasks before exit (default)
+./server --shutdown=immediate     # discard pending tasks, exit fast
+./server -t 2 --shutdown=immediate  # combine flags
 ```
 
 The server creates shared memory and semaphores, then waits for requests.
-Press Ctrl+C (SIGINT) for graceful shutdown.
+The startup banner shows the detected core count, threads-per-pool, and
+shutdown mode. Press Ctrl+C (SIGINT) or send SIGTERM for shutdown.
+
+**Shutdown modes:**
+- `drain` (default) -- all queued tasks finish before the server exits. On
+  shutdown the server reports how many tasks remain.
+- `immediate` -- pending queue is discarded; only tasks already being processed
+  are allowed to complete. Useful for fast restarts.
+
+**Status report:** Send `SIGUSR1` to get a live status report without stopping
+the server:
+
+```bash
+kill -USR1 $(pidof server)
+```
+
+**Duplicate instance protection:** Only one server can run at a time.
+Attempting to start a second instance prints an error and exits immediately.
+The protection uses an advisory file lock (`/tmp/ipc_server.lock`) via
+`flock()`, which the kernel releases automatically if the server crashes.
 
 ### Run Client 1 (add, multiply, concat)
 
@@ -198,12 +239,16 @@ linProj/
 │   ├── server.cpp              # Server with dual thread pools
 │   ├── client1.cpp             # Client 1 (direct link)
 │   └── client2.cpp             # Client 2 (dlopen/dlsym)
+├── Makefile                       # Convenience wrapper for CMake commands
 ├── docs/
-│   ├── Doxyfile.in             # Doxygen config template
+│   ├── Doxyfile.in                # Doxygen config template
+│   ├── server_concepts.md         # C/C++ concepts reference (server)
+│   ├── client_concepts.md         # C/C++ concepts reference (clients)
 │   └── sphinx/
-│       ├── conf.py             # Sphinx + Breathe config
-│       └── index.rst           # Documentation root
+│       ├── conf.py                # Sphinx + Breathe config
+│       └── index.rst              # Documentation root
 └── tests/
-    ├── conftest.py             # Pytest fixtures (server lifecycle)
-    └── test_client_server.py   # Integration tests
+    ├── conftest.py                # Pytest fixtures (server lifecycle)
+    ├── test_client_server.py      # Integration tests
+    └── test_server_threads.py     # Thread-config and -t flag tests
 ```

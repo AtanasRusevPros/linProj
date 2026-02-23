@@ -143,3 +143,5 @@ class TestNonBlockingOrdering:
         assert rc == 0
         assert "Result is ab!" in stdout
         assert "Result is 56!" in stdout
+
+

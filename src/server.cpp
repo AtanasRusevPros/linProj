@@ -5,20 +5,30 @@
 #include "ipc_defs.h"
 
 #include <atomic>
+#include <cerrno>
 #include <condition_variable>
 #include <csignal>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <fcntl.h>
 #include <functional>
 #include <mutex>
 #include <queue>
 #include <semaphore.h>
+#include <sys/file.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <thread>
+#include <time.h>
 #include <unistd.h>
 #include <vector>
+
+/* ================================================================== */
+/*  ShutdownMode                                                       */
+/* ================================================================== */
+
+enum class ShutdownMode { Drain, Immediate };
 
 /* ================================================================== */
 /*  ThreadPool -- simplified C++17 pool based on CPP11_ThreadPool      */
@@ -52,30 +62,47 @@ public:
 
     ~ThreadPool() { shutdown(); }
 
-    void submit(int slot_index)
+    bool submit(int slot_index)
     {
         {
             std::scoped_lock lock(mutex_);
+            if (stop_.load())
+                return false;
             queue_.push(slot_index);
         }
         cv_.notify_one();
+        return true;
     }
 
-    void shutdown()
+    size_t shutdown(ShutdownMode mode = ShutdownMode::Drain)
     {
+        size_t discarded = 0;
         if (stop_.exchange(true))
-            return;
+            return 0;
+        if (mode == ShutdownMode::Immediate) {
+            std::scoped_lock lock(mutex_);
+            discarded = queue_.size();
+            std::queue<int> empty;
+            queue_.swap(empty);
+        }
         cv_.notify_all();
         for (auto &w : workers_) {
             if (w.joinable())
                 w.join();
         }
+        return discarded;
+    }
+
+    size_t pending_count() const
+    {
+        std::scoped_lock lock(mutex_);
+        return queue_.size();
     }
 
 private:
     std::vector<std::thread>     workers_;
     std::queue<int>              queue_;
-    std::mutex                   mutex_;
+    mutable std::mutex           mutex_;
     std::condition_variable      cv_;
     std::atomic<bool>            stop_{false};
     std::function<void(int)>     task_handler_;
@@ -85,12 +112,25 @@ private:
 /*  Global state                                                       */
 /* ================================================================== */
 
+static const char *LOCK_FILE = "/tmp/ipc_server.lock";
+
 static std::atomic<bool> g_running{true};
+static std::atomic<bool> g_status_requested{false};
+static ShutdownMode g_shutdown_mode = ShutdownMode::Drain;
+static int g_lock_fd = -1;
 static SharedMemoryLayout *g_shm = nullptr;
 static int g_shm_fd = -1;
 static sem_t *g_mutex_sem = nullptr;
 static sem_t *g_server_sem = nullptr;
 static sem_t *g_slot_sems[IPC_MAX_SLOTS] = {};
+
+static size_t default_threads_per_pool()
+{
+    unsigned hw = std::thread::hardware_concurrency();
+    if (hw <= 2)
+        return 1;
+    return (hw - 1) / 2;
+}
 
 static void slot_sem_name(int index, char *buf, size_t buflen)
 {
@@ -104,6 +144,13 @@ static void slot_sem_name(int index, char *buf, size_t buflen)
 static void signal_handler(int /*sig*/)
 {
     g_running.store(false);
+    if (g_server_sem)
+        sem_post(g_server_sem);
+}
+
+static void status_handler(int /*sig*/)
+{
+    g_status_requested.store(true);
     if (g_server_sem)
         sem_post(g_server_sem);
 }
@@ -230,14 +277,57 @@ static void cleanup_ipc(void)
         close(g_shm_fd);
     }
     shm_unlink(IPC_SHM_NAME);
+    if (g_lock_fd >= 0) {
+        unlink(LOCK_FILE);
+        close(g_lock_fd);
+    }
 }
 
 /* ================================================================== */
 /*  Main                                                               */
 /* ================================================================== */
 
-int main()
+int main(int argc, char *argv[])
 {
+    /* --- Parse command-line flags --- */
+    size_t threads_per_pool = default_threads_per_pool();
+    for (int i = 1; i < argc; ++i) {
+        if (strcmp(argv[i], "-t") == 0 && i + 1 < argc) {
+            int val = atoi(argv[++i]);
+            if (val > 0)
+                threads_per_pool = static_cast<size_t>(val);
+        } else if (strncmp(argv[i], "--shutdown=", 11) == 0) {
+            const char *mode = argv[i] + 11;
+            if (strcmp(mode, "immediate") == 0)
+                g_shutdown_mode = ShutdownMode::Immediate;
+            else if (strcmp(mode, "drain") == 0)
+                g_shutdown_mode = ShutdownMode::Drain;
+            else {
+                fprintf(stderr, "Unknown shutdown mode: %s (use drain or immediate)\n", mode);
+                return 1;
+            }
+        }
+    }
+
+    /* --- Acquire instance lock --- */
+    g_lock_fd = open(LOCK_FILE, O_CREAT | O_RDWR, 0666);
+    if (g_lock_fd < 0) {
+        perror("server: open lock file");
+        return 1;
+    }
+    if (flock(g_lock_fd, LOCK_EX | LOCK_NB) < 0) {
+        if (errno == EWOULDBLOCK) {
+            fprintf(stderr,
+                    "Error: another server instance is already running.\n"
+                    "If the previous server crashed, remove %s and retry.\n",
+                    LOCK_FILE);
+        } else {
+            perror("server: flock");
+        }
+        close(g_lock_fd);
+        return 1;
+    }
+
     /* --- Create shared memory --- */
     g_shm_fd = shm_open(IPC_SHM_NAME, O_CREAT | O_RDWR, 0666);
     if (g_shm_fd < 0) {
@@ -316,16 +406,60 @@ int main()
     sigaction(SIGINT, &sa, nullptr);
     sigaction(SIGTERM, &sa, nullptr);
 
-    /* --- Thread pools --- */
-    ThreadPool math_pool(2, process_math);
-    ThreadPool string_pool(2, process_string);
+    struct sigaction sa_status;
+    memset(&sa_status, 0, sizeof(sa_status));
+    sa_status.sa_handler = status_handler;
+    sigemptyset(&sa_status.sa_mask);
+    sa_status.sa_flags = 0;
+    sigaction(SIGUSR1, &sa_status, nullptr);
 
-    printf("Server started. PID=%d. Waiting for requests...\n", getpid());
+    time_t start_time = time(nullptr);
+
+    /* --- Thread pools --- */
+    ThreadPool math_pool(threads_per_pool, process_math);
+    ThreadPool string_pool(threads_per_pool, process_string);
+
+    printf("Server started. PID=%d, cores=%u, threads/pool=%zu, shutdown=%s. "
+           "Waiting for requests...\n",
+           getpid(), std::thread::hardware_concurrency(), threads_per_pool,
+           (g_shutdown_mode == ShutdownMode::Drain) ? "drain" : "immediate");
     fflush(stdout);
 
     /* --- Dispatcher loop --- */
     while (g_running.load()) {
         sem_wait(g_server_sem);
+
+        if (g_status_requested.exchange(false)) {
+            time_t now = time(nullptr);
+            long uptime = static_cast<long>(difftime(now, start_time));
+            long hours = uptime / 3600;
+            long mins  = (uptime % 3600) / 60;
+            long secs  = uptime % 60;
+            const char *mode_str = (g_shutdown_mode == ShutdownMode::Drain)
+                                       ? "drain" : "immediate";
+
+            int free_slots = 0, pending_slots = 0, proc_slots = 0, ready_slots = 0;
+            sem_wait(g_mutex_sem);
+            for (int i = 0; i < IPC_MAX_SLOTS; ++i) {
+                switch (g_shm->slots[i].state) {
+                case IPC_SLOT_FREE:           ++free_slots;    break;
+                case IPC_SLOT_REQUEST_PENDING: ++pending_slots; break;
+                case IPC_SLOT_PROCESSING:      ++proc_slots;    break;
+                case IPC_SLOT_RESPONSE_READY:  ++ready_slots;   break;
+                }
+            }
+            sem_post(g_mutex_sem);
+
+            printf("[STATUS] PID=%d, uptime=%ldh%02ldm%02lds, mode=%s, "
+                   "threads/pool=%zu\n",
+                   getpid(), hours, mins, secs, mode_str, threads_per_pool);
+            printf("[STATUS] math_pool: %zu pending, string_pool: %zu pending\n",
+                   math_pool.pending_count(), string_pool.pending_count());
+            printf("[STATUS] slots: %d free, %d pending, %d processing, %d ready\n",
+                   free_slots, pending_slots, proc_slots, ready_slots);
+            fflush(stdout);
+        }
+
         if (!g_running.load())
             break;
 
@@ -357,9 +491,23 @@ int main()
     }
 
     /* --- Shutdown --- */
-    printf("\nShutting down server...\n");
-    math_pool.shutdown();
-    string_pool.shutdown();
+    size_t pending = math_pool.pending_count() + string_pool.pending_count();
+
+    if (g_shutdown_mode == ShutdownMode::Drain) {
+        printf("\nShutdown requested (drain mode). "
+               "%zu pending task(s) will be finished before exit.\n", pending);
+    } else {
+        printf("\nShutdown requested (immediate mode). "
+               "Discarding pending task(s).\n");
+    }
+    fflush(stdout);
+
+    size_t discarded_math   = math_pool.shutdown(g_shutdown_mode);
+    size_t discarded_string = string_pool.shutdown(g_shutdown_mode);
+    if (g_shutdown_mode == ShutdownMode::Immediate && (discarded_math + discarded_string) > 0) {
+        printf("Discarded %zu task(s).\n", discarded_math + discarded_string);
+    }
+
     cleanup_ipc();
     printf("Server shut down cleanly.\n");
 

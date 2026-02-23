@@ -14,12 +14,15 @@ SHM_PATH = "/dev/shm/ipc_shm"
 @pytest.fixture(scope="session", autouse=True)
 def server_process():
     """Start the server before all tests and shut it down after."""
-    # Clean up leftover IPC objects from prior crashed runs
+    # Clean up leftover IPC objects and lock file from prior crashed runs
     if os.path.exists(SHM_PATH):
         os.remove(SHM_PATH)
+    lock_file = "/tmp/ipc_server.lock"
+    if os.path.exists(lock_file):
+        os.remove(lock_file)
 
     proc = subprocess.Popen(
-        [SERVER_BIN],
+        [SERVER_BIN, "-t", "2"],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         cwd=BUILD_DIR,
