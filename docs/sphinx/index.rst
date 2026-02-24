@@ -2,47 +2,21 @@ IPC Client-Server System
 ========================
 
 A Linux client-server system using POSIX shared memory for inter-process
-communication. The system consists of a shared library (``libipc.so``),
-a multi-threaded server, and two client applications.
+communication. This documentation site combines architecture and operations
+guides with generated API reference from Doxygen XML.
 
-Architecture
-------------
+.. toctree::
+   :maxdepth: 2
+   :caption: Contents
 
-The system uses a **slot-based shared memory** design. A fixed array of 16
-message slots resides in POSIX shared memory (``/dev/shm/ipc_shm``). Each slot
-holds one in-flight request and its corresponding response.
+   overview
+   architecture
+   protocol
+   constraints
+   build_and_run
+   testing
+   api
 
-**Slot state machine:**
-
-.. code-block:: text
-
-   FREE -> REQUEST_PENDING -> PROCESSING -> RESPONSE_READY -> FREE
-
-**Synchronization** uses named POSIX semaphores:
-
-- ``/ipc_mutex`` -- protects all shared memory reads/writes.
-- ``/ipc_server_notify`` -- counting semaphore to wake the server dispatcher.
-- ``/ipc_slot_0`` through ``/ipc_slot_15`` -- per-slot semaphores for blocking call wake-up.
-
-The server uses **dual thread pools** (one for math, one for string operations)
-backed by ``std::thread`` (which wraps POSIX pthreads on Linux).
-
-IPC Protocol
-------------
-
-Defined in ``include/ipc_defs.h``. All types are POD and safe for shared memory.
-
-API Reference
--------------
-
-libipc.h
-^^^^^^^^
-
-.. doxygenfile:: libipc.h
-   :project: ipc
-
-ipc_defs.h
-^^^^^^^^^^
-
-.. doxygenfile:: ipc_defs.h
-   :project: ipc
+Start with :doc:`overview` for the full project narrative from ``README.md``,
+then use the dedicated pages for architecture, protocol, constraints, and
+testing. Generated API reference is centralized in :doc:`api`.

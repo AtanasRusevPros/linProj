@@ -48,7 +48,7 @@ Two separate thread pools (math and string) dispatch work from the main
 dispatcher thread. The number of worker threads per pool is **auto-detected**
 at startup based on the CPU core count: `(cores - 1) / 2`, reserving one core
 for the dispatcher. This can be overridden with the `-t N` command-line flag
-(see [Running](#running)).
+(see the ``Running`` section).
 
 ### Non-Blocking Demonstration
 
@@ -107,7 +107,7 @@ Expected categories:
 - Optional (documentation):
   - `doxygen`
   - `sphinx-build`
-  - pip packages: `sphinx`, `breathe` (installed by `make docs` into `.venv`)
+  - pip packages: `sphinx`, `breathe`, `myst-parser` (installed by `make docs` into `.venv`)
 - Optional (static analysis):
   - `cppcheck`
 
@@ -195,6 +195,9 @@ cd build
 Client 1 behavior on restart detection:
 - Blocking calls fail fast with a message (user retries manually).
 - Pending async requests are re-submitted automatically after reconnect.
+- Input constraints:
+  - numeric operands are integer-only (`int32_t`) at the CLI,
+  - float values (for example `12.3`) are rejected as invalid input.
 
 ### Run Client 2 (subtract, divide, search)
 
@@ -204,6 +207,23 @@ cd build
 ```
 
 Client 2 follows the same restart policy as Client 1.
+- Input constraints:
+  - subtract/divide operands are integer-only (`int32_t`) at the CLI,
+  - search substring/string inputs must each be 1..16 characters.
+
+### Runtime Constraints
+
+- Numeric CLI inputs are integer-only (`int32_t`) in both clients.
+  - Floating-point input such as `12.3` is rejected as invalid input.
+- String inputs for concat/search must be 1..16 characters each.
+  - Concat result capacity is 32 characters plus null terminator.
+- Async request retrieval is explicit:
+  - non-blocking operations return a request ID,
+  - results are fetched with menu command `4` (`Check pending results`).
+- IPC capacity is bounded:
+  - at most 16 in-flight requests can exist at once (`IPC_MAX_SLOTS`),
+  - additional submissions fail with a no-free-slots error.
+- Divide-by-zero is reported as an operation status error, not a numeric result.
 
 ## Testing
 
@@ -272,12 +292,12 @@ cmake --build build --target docs-doxygen
 ### Sphinx + Breathe
 
 ```bash
-# Install: pip install sphinx breathe
+# Install: pip install sphinx breathe myst-parser
 cmake --build build --target docs-sphinx
 # Output: build/docs/sphinx/index.html
 ```
 
-`make docs` bootstraps `.venv`, installs `sphinx` + `breathe`, and re-runs
+`make docs` bootstraps `.venv`, installs `sphinx` + `breathe` + `myst-parser`, and re-runs
 CMake configure before building `docs-sphinx`.
 
 ## Static Analysis

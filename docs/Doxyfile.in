@@ -3,11 +3,13 @@
 PROJECT_NAME           = "IPC Client-Server System"
 PROJECT_BRIEF          = "Linux IPC system using POSIX shared memory and semaphores"
 OUTPUT_DIRECTORY       = @CMAKE_BINARY_DIR@/docs/doxygen
-INPUT                  = @CMAKE_SOURCE_DIR@/src @CMAKE_SOURCE_DIR@/include
-FILE_PATTERNS          = *.h *.cpp
+INPUT                  = @CMAKE_SOURCE_DIR@/README.md @CMAKE_SOURCE_DIR@/src @CMAKE_SOURCE_DIR@/include
+FILE_PATTERNS          = *.h *.cpp *.md
 RECURSIVE              = NO
 EXTRACT_ALL            = YES
 EXTRACT_STATIC         = YES
+USE_MDFILE_AS_MAINPAGE = @CMAKE_SOURCE_DIR@/README.md
+MARKDOWN_SUPPORT       = YES
 
 # Generate XML for Breathe/Sphinx integration
 GENERATE_XML           = YES

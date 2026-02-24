@@ -56,7 +56,7 @@ test:
 
 docs:
 	@python3 -m venv .venv
-	@.venv/bin/pip install -q sphinx breathe
+	@.venv/bin/pip install -q sphinx breathe myst-parser
 	@cmake -B $(BUILD_DIR)
 	@cmake --build $(BUILD_DIR) --target docs-sphinx
 
@@ -71,7 +71,7 @@ cppcheck-deep:
 
 venv:
 	@python3 -m venv .venv
-	@.venv/bin/pip install pytest sphinx breathe
+	@.venv/bin/pip install pytest sphinx breathe myst-parser
 	@echo "Venv created. Reconfigure: cmake -B $(BUILD_DIR)"
 
 deps:
@@ -88,7 +88,7 @@ deps:
 	@echo "Optional (documentation):"
 	@echo "  - doxygen"
 	@echo "  - sphinx-build"
-	@echo "  - pip packages: sphinx, breathe (installed by 'make docs' into .venv)"
+	@echo "  - pip packages: sphinx, breathe, myst-parser (installed by 'make docs' into .venv)"
 	@echo ""
 	@echo "Optional (static analysis):"
 	@echo "  - cppcheck"

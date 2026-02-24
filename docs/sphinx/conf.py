@@ -7,6 +7,7 @@ copyright = "2026"
 
 extensions = [
     "breathe",
+    "myst_parser",
 ]
 
 # Breathe: point at Doxygen XML output
@@ -21,3 +22,5 @@ breathe_default_project = "ipc"
 templates_path = []
 exclude_patterns = ["_build"]
 html_theme = "alabaster"
+
+myst_heading_anchors = 3
