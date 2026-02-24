@@ -17,6 +17,7 @@ Target model:
 - ``make build`` compiles binaries only.
 - ``make test`` runs tests only.
 - ``make docs`` builds docs only.
+- ``make clean_all`` removes generated build/test/docs artifacts.
 - ``make all`` / ``make full`` run build + test + docs.
 
 Important preconditions:

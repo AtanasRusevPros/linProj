@@ -72,7 +72,7 @@ A wrapper `Makefile` provides shortcuts for the most common commands:
 
 ```bash
 make              # full pipeline: build + test + docs
-make build        # compile only (default build configuration)
+make build        # compile only
 make all          # full pipeline: build + test + docs
 make full         # alias for all
 make debug        # Debug build (-g -O0, for GDB)
@@ -80,8 +80,9 @@ make release      # Release build (-O3, for production)
 make sanitize     # Debug + AddressSanitizer + UBSan
 make reldbg       # RelWithDebInfo (-O2 -g, for profiling)
 make clean        # remove build artifacts
+make clean_all    # remove build + docs + test caches + venv
 make rebuild      # clean + rebuild
-make rebuild_all  # clean + build + test + docs
+make rebuild_all  # clean_all + build + test + docs
 make test         # run pytest integration tests
 make docs         # generate Sphinx + Doxygen documentation
 make doxygen      # generate Doxygen documentation only
@@ -91,6 +92,9 @@ make venv         # create .venv and install Python dependencies
 make deps         # print required/optional dependencies
 make help         # show all available targets
 ```
+
+`make` without arguments runs the default full pipeline and is equivalent to
+`make all`.
 
 ### Dependency Guide
 

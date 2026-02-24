@@ -11,8 +11,9 @@
 #   make sanitize     - configure Debug + sanitizers + build
 #   make reldbg       - configure RelWithDebInfo + build
 #   make clean        - clean build artifacts
+#   make clean_all    - remove build + docs + test caches + venv
 #   make rebuild      - clean + build
-#   make rebuild_all  - clean + build + test + docs
+#   make rebuild_all  - clean_all + build + test + docs
 #   make test         - run pytest suite
 #   make docs         - generate Sphinx + Doxygen documentation
 #   make doxygen      - generate Doxygen documentation only
@@ -25,7 +26,7 @@
 BUILD_DIR := build
 .DEFAULT_GOAL := all
 
-.PHONY: all full build debug release sanitize reldbg clean rebuild rebuild_all test docs doxygen cppcheck cppcheck-deep venv deps help
+.PHONY: all full build debug release sanitize reldbg clean clean_all rebuild rebuild_all test docs doxygen cppcheck cppcheck-deep venv deps help
 
 build:
 	@cmake -B $(BUILD_DIR)
@@ -54,12 +55,15 @@ reldbg:
 clean:
 	@cmake --build $(BUILD_DIR) --target clean 2>/dev/null || true
 
+clean_all: clean
+	@rm -rf "$(BUILD_DIR)" .pytest_cache .venv
+
 rebuild:
 	@cmake --build $(BUILD_DIR) --clean-first 2>/dev/null || true
 	@cmake -B $(BUILD_DIR)
 	@cmake --build $(BUILD_DIR)
 
-rebuild_all: clean build test docs
+rebuild_all: clean_all build test docs
 
 test:
 	@python3 -m venv .venv
@@ -116,7 +120,8 @@ deps:
 
 help:
 	@echo "This is a simple Makefile wrapper around CMake. Available targets:"
-	@echo "  build     - compile only (default build configuration)"
+	@echo "  make      - default action (same as: make all)"
+	@echo "  build     - compile only"
 	@echo "  all       - full pipeline: build + test + docs"
 	@echo "  full      - alias for all"
 	@echo "  debug     - Debug build (-g -O0, for GDB)"
@@ -124,8 +129,9 @@ help:
 	@echo "  sanitize  - Debug + AddressSanitizer + UBSan"
 	@echo "  reldbg    - RelWithDebInfo (-O2 -g, for profiling)"
 	@echo "  clean     - remove build artifacts"
+	@echo "  clean_all - remove build + docs + test caches + venv"
 	@echo "  rebuild   - clean + rebuild"
-	@echo "  rebuild_all - clean + build + test + docs"
+	@echo "  rebuild_all - clean_all + build + test + docs"
 	@echo "  test      - run pytest integration tests"
 	@echo "  docs      - generate Sphinx + Doxygen documentation"
 	@echo "  doxygen   - generate Doxygen documentation only"

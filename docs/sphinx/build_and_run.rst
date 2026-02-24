@@ -5,6 +5,7 @@ Build flow:
 
 .. code-block:: bash
 
+   make
    make build
 
 Primary binaries:
@@ -16,9 +17,11 @@ Primary binaries:
 
 Useful make targets:
 
+- ``make``: default action (same as ``make all``).
 - ``make build``: compile only.
 - ``make all`` / ``make full``: run build + test + docs.
-- ``make rebuild_all``: clean + build + test + docs.
+- ``make clean_all``: remove build + docs + test caches + venv.
+- ``make rebuild_all``: clean_all + build + test + docs.
 - ``make help``: print all targets.
 - ``make deps``: print dependency guide.
 - ``make test``: run pytest integration suites.
