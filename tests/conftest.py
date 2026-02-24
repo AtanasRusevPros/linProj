@@ -11,8 +11,8 @@ import pytest
 
 BUILD_DIR = os.path.join(os.path.dirname(__file__), "..", "build")
 SERVER_BIN = os.path.join(BUILD_DIR, "server")
+SERVER_BIN_REALPATH = os.path.realpath(SERVER_BIN)
 SHM_PATH = "/dev/shm/ipc_shm"
-LOCK_FILE = "/tmp/ipc_server.lock"
 PYTEST_LOCK_FILE = "/tmp/ipc_pytest.lock"
 
 
@@ -37,33 +37,27 @@ def _wait_pids_exit(pids: List[int], timeout_sec: float) -> List[int]:
 
 
 def list_workspace_server_pids() -> List[int]:
-    """List running server PIDs for this workspace build path."""
+    """List running PIDs whose executable matches this workspace server binary."""
+    pids = []
     try:
-        ps_out = subprocess.check_output(["ps", "-eo", "pid=,args="], text=True)
+        proc_entries = os.listdir("/proc")
     except Exception:
         return []
 
-    target_prefix = f"{SERVER_BIN} "
-    target_exact = SERVER_BIN
-    pids = []
-    for line in ps_out.splitlines():
-        line = line.strip()
-        if not line:
+    for name in proc_entries:
+        if not name.isdigit():
             continue
-        parts = line.split(None, 1)
-        if len(parts) != 2:
+        pid = int(name)
+        if pid == os.getpid():
             continue
-        pid_str, args = parts
-        if args == target_exact or args.startswith(target_prefix):
-            try:
-                pid = int(pid_str)
-            except ValueError:
-                continue
-            # Never target current python process by accident.
-            if pid != os.getpid():
-                pids.append(pid)
+        try:
+            exe_path = os.path.realpath(f"/proc/{pid}/exe")
+        except OSError:
+            continue
+        if exe_path == SERVER_BIN_REALPATH:
+            pids.append(pid)
 
-    return pids
+    return sorted(set(pids))
 
 
 def ensure_no_external_server_running(context: str, allowed_pids=None):
@@ -137,6 +131,9 @@ def try_acquire_lock_for_tests(lock_path: str = PYTEST_LOCK_FILE):
 
 def cleanup_ipc_files():
     """Remove known IPC objects and lock file."""
+    # Never touch global IPC objects while any server process is still running.
+    if list_workspace_server_pids():
+        return
     if os.path.exists(SHM_PATH):
         os.remove(SHM_PATH)
     for i in range(16):
@@ -147,8 +144,7 @@ def cleanup_ipc_files():
         path = f"/dev/shm/{name}"
         if os.path.exists(path):
             os.remove(path)
-    if os.path.exists(LOCK_FILE):
-        os.remove(LOCK_FILE)
+    # Keep lock file path; flock lock ownership is inode-based and stale path is harmless.
 
 
 def pytest_configure(config):
@@ -162,6 +158,21 @@ def pytest_collection_modifyitems(config, items):
     config._needs_session_server = any(  # type: ignore[attr-defined]
         "self_managed_server" not in item.keywords for item in items
     )
+
+
+def pytest_sessionstart(session):
+    """Startup diagnostics and fail-fast guard for external server detection."""
+    pids = list_workspace_server_pids()
+    if os.environ.get("IPC_TEST_DEBUG_PIDS", "1") != "0":
+        print(f"[IPC_TEST_DEBUG] server_bin: {SERVER_BIN}")
+        print(f"[IPC_TEST_DEBUG] server_bin_realpath: {SERVER_BIN_REALPATH}")
+        print(f"[IPC_TEST_DEBUG] detected server pids at session start: {pids}")
+    if pids and os.environ.get("IPC_TEST_ABORT_ON_EXTERNAL", "1") != "0":
+        pytest.exit(
+            "Aborting pytest: external server instance(s) detected at startup: "
+            f"{pids}. Stop manual server processes before running tests.",
+            returncode=2,
+        )
 
 
 @pytest.fixture(scope="session", autouse=True)

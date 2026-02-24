@@ -200,7 +200,7 @@ static void process_math(int slot_idx)
     sem_post(g_mutex_sem);
 
     if (cmd == IPC_CMD_MUL || cmd == IPC_CMD_DIV)
-        std::this_thread::sleep_for(std::chrono::seconds(2));
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
 
     int32_t result = 0;
     ipc_status_t status = IPC_STATUS_OK;

@@ -15,7 +15,7 @@ import pytest
 
 from conftest import (
     PYTEST_LOCK_FILE,
-    release_test_run_lock,
+    list_workspace_server_pids,
     try_acquire_lock_for_tests,
 )
 
@@ -23,7 +23,6 @@ BUILD_DIR = os.path.join(os.path.dirname(__file__), "..", "build")
 SERVER_BIN = os.path.join(BUILD_DIR, "server")
 CLIENT1_BIN = os.path.join(BUILD_DIR, "client1")
 SHM_PATH = "/dev/shm/ipc_shm"
-LOCK_FILE = "/tmp/ipc_server.lock"
 LIBIPC_SO = os.path.join(BUILD_DIR, "libipc.so")
 IPC_MAX_SLOTS = 16
 IPC_NOT_READY = 1
@@ -35,7 +34,9 @@ pytestmark = pytest.mark.self_managed_server
 
 
 def _cleanup_ipc():
-    """Remove leftover IPC objects and lock file so a fresh server can start."""
+    """Remove leftover IPC objects so a fresh server can start."""
+    if _list_workspace_server_pids():
+        return
     if os.path.exists(SHM_PATH):
         os.remove(SHM_PATH)
     for i in range(16):
@@ -46,8 +47,6 @@ def _cleanup_ipc():
         path = f"/dev/shm/{name}"
         if os.path.exists(path):
             os.remove(path)
-    if os.path.exists(LOCK_FILE):
-        os.remove(LOCK_FILE)
 
 
 def _cleanup_orphan_servers():
@@ -76,32 +75,7 @@ def _cleanup_orphan_servers():
 
 
 def _list_workspace_server_pids():
-    """List running server PIDs for this workspace build path."""
-    try:
-        ps_out = subprocess.check_output(["ps", "-eo", "pid=,args="], text=True)
-    except Exception:
-        return []
-
-    target_prefix = f"{SERVER_BIN} "
-    target_exact = SERVER_BIN
-    pids = []
-    for line in ps_out.splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        parts = line.split(None, 1)
-        if len(parts) != 2:
-            continue
-        pid_str, args = parts
-        if args == target_exact or args.startswith(target_prefix):
-            try:
-                pid = int(pid_str)
-            except ValueError:
-                continue
-            if pid != os.getpid():
-                pids.append(pid)
-
-    return pids
+    return list_workspace_server_pids()
 
 
 def _ensure_no_external_server_running(context, allowed_pids=None):
@@ -755,15 +729,9 @@ class TestHarnessGuards:
             _cleanup_ipc()
 
     def test_pytest_lock_conflict_detected(self):
-        """Second lock acquisition should fail while first holder owns it."""
+        """Acquiring lock in-test should fail because session fixture holds it."""
         first_fd = try_acquire_lock_for_tests(PYTEST_LOCK_FILE)
-        try:
-            assert first_fd is not None
-            second_fd = try_acquire_lock_for_tests(PYTEST_LOCK_FILE)
-            assert second_fd is None
-        finally:
-            if first_fd is not None:
-                release_test_run_lock(first_fd)
+        assert first_fd is None
 
 
 class TestMathFunctionBatchesContd:

@@ -205,6 +205,11 @@ Important test preconditions:
   concurrent test invocations against shared POSIX IPC names.
 - If you see a lock conflict, wait for the other pytest run to finish (or
   terminate stale pytest processes) and rerun.
+- Startup PID diagnostics are enabled by default. Set `IPC_TEST_DEBUG_PIDS=0`
+  to suppress debug lines if you need quieter pytest output.
+- Pytest now aborts immediately when an external server is detected at session
+  start (single clear failure instead of per-test setup errors). You can
+  disable this behavior with `IPC_TEST_ABORT_ON_EXTERNAL=0` for debugging only.
 
 `make test` now bootstraps `.venv`, installs `pytest`, and re-runs CMake configure
 before building the test target, so it works in fresh clones without manual setup.
