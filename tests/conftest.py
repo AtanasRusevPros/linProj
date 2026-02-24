@@ -1,4 +1,6 @@
 """Pytest fixtures for IPC client-server integration tests."""
+import errno
+import fcntl
 import os
 import signal
 import subprocess
@@ -11,6 +13,7 @@ BUILD_DIR = os.path.join(os.path.dirname(__file__), "..", "build")
 SERVER_BIN = os.path.join(BUILD_DIR, "server")
 SHM_PATH = "/dev/shm/ipc_shm"
 LOCK_FILE = "/tmp/ipc_server.lock"
+PYTEST_LOCK_FILE = "/tmp/ipc_pytest.lock"
 
 
 def _pid_is_alive(pid: int) -> bool:
@@ -33,12 +36,12 @@ def _wait_pids_exit(pids: List[int], timeout_sec: float) -> List[int]:
     return remaining
 
 
-def cleanup_orphan_servers():
-    """Terminate orphan server processes from this workspace build path."""
+def list_workspace_server_pids() -> List[int]:
+    """List running server PIDs for this workspace build path."""
     try:
         ps_out = subprocess.check_output(["ps", "-eo", "pid=,args="], text=True)
     except Exception:
-        return
+        return []
 
     target_prefix = f"{SERVER_BIN} "
     target_exact = SERVER_BIN
@@ -60,6 +63,23 @@ def cleanup_orphan_servers():
             if pid != os.getpid():
                 pids.append(pid)
 
+    return pids
+
+
+def ensure_no_external_server_running(context: str, allowed_pids=None):
+    """Fail fast if a server process exists outside allowed ownership."""
+    allowed = set(allowed_pids or [])
+    pids = [pid for pid in list_workspace_server_pids() if pid not in allowed]
+    if pids:
+        raise RuntimeError(
+            f"{context}: external server process(es) detected: {pids}. "
+            "Stop manual server instances before running pytest."
+        )
+
+
+def cleanup_orphan_servers():
+    """Terminate orphan server processes from this workspace build path."""
+    pids = list_workspace_server_pids()
     if not pids:
         return
 
@@ -77,6 +97,42 @@ def cleanup_orphan_servers():
             pass
 
     _wait_pids_exit(remaining, timeout_sec=1.0)
+
+
+def acquire_test_run_lock_nonblocking(lock_path: str = PYTEST_LOCK_FILE) -> int:
+    """Acquire a process-wide pytest lock to avoid concurrent IPC test runs."""
+    fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o666)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError as exc:
+        os.close(fd)
+        if exc.errno in (errno.EACCES, errno.EAGAIN):
+            raise RuntimeError(
+                f"Another IPC pytest run is active (lock: {lock_path}). "
+                "Run test suites sequentially."
+            ) from exc
+        raise
+    return fd
+
+
+def release_test_run_lock(fd: int):
+    try:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+    finally:
+        os.close(fd)
+
+
+def try_acquire_lock_for_tests(lock_path: str = PYTEST_LOCK_FILE):
+    """Internal helper used by tests to validate lock contention behavior."""
+    fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o666)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError as exc:
+        os.close(fd)
+        if exc.errno in (errno.EACCES, errno.EAGAIN):
+            return None
+        raise
+    return fd
 
 
 def cleanup_ipc_files():
@@ -109,14 +165,24 @@ def pytest_collection_modifyitems(config, items):
 
 
 @pytest.fixture(scope="session", autouse=True)
-def server_process(request):
+def ipc_test_run_lock():
+    """Ensure only one IPC pytest invocation runs at a time."""
+    fd = acquire_test_run_lock_nonblocking()
+    try:
+        yield
+    finally:
+        release_test_run_lock(fd)
+
+
+@pytest.fixture(scope="session", autouse=True)
+def server_process(request, ipc_test_run_lock):
     """Start the server before all tests and shut it down after."""
     # Skip global fixture for suites that self-manage server lifecycle.
     if not getattr(request.config, "_needs_session_server", True):
         yield None
         return
 
-    cleanup_orphan_servers()
+    ensure_no_external_server_running("server_process startup")
     cleanup_ipc_files()
 
     proc = subprocess.Popen(
@@ -127,46 +193,47 @@ def server_process(request):
         start_new_session=True,
     )
 
-    # Wait for shared memory to appear (server is ready)
-    for _ in range(50):
-        if os.path.exists(SHM_PATH):
-            break
-        time.sleep(0.1)
-    else:
-        proc.kill()
-        raise RuntimeError("Server did not create shared memory in time")
-
-    # Small extra delay for semaphore initialization
-    time.sleep(0.2)
-
-    yield proc
-
-    # Graceful shutdown
-    if proc.poll() is None:
-        try:
-            os.killpg(proc.pid, signal.SIGINT)
-        except ProcessLookupError:
-            pass
     try:
-        proc.wait(timeout=5)
-    except subprocess.TimeoutExpired:
+        # Wait for shared memory to appear (server is ready)
+        for _ in range(50):
+            if os.path.exists(SHM_PATH):
+                break
+            time.sleep(0.1)
+        else:
+            proc.kill()
+            raise RuntimeError("Server did not create shared memory in time")
+
+        # Small extra delay for semaphore initialization
+        time.sleep(0.2)
+
+        yield proc
+    finally:
+        # Graceful shutdown of fixture-owned process only.
         if proc.poll() is None:
             try:
-                os.killpg(proc.pid, signal.SIGTERM)
+                os.killpg(proc.pid, signal.SIGINT)
             except ProcessLookupError:
                 pass
         try:
-            proc.wait(timeout=2)
+            proc.wait(timeout=5)
         except subprocess.TimeoutExpired:
             if proc.poll() is None:
                 try:
-                    os.killpg(proc.pid, signal.SIGKILL)
+                    os.killpg(proc.pid, signal.SIGTERM)
                 except ProcessLookupError:
                     pass
-            proc.wait()
+            try:
+                proc.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                if proc.poll() is None:
+                    try:
+                        os.killpg(proc.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                proc.wait()
 
-    cleanup_orphan_servers()
-    cleanup_ipc_files()
+        ensure_no_external_server_running("server_process teardown", allowed_pids={proc.pid})
+        cleanup_ipc_files()
 
 
 def run_client(client_name, inputs, timeout=10):

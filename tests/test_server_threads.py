@@ -13,6 +13,12 @@ import ctypes
 
 import pytest
 
+from conftest import (
+    PYTEST_LOCK_FILE,
+    release_test_run_lock,
+    try_acquire_lock_for_tests,
+)
+
 BUILD_DIR = os.path.join(os.path.dirname(__file__), "..", "build")
 SERVER_BIN = os.path.join(BUILD_DIR, "server")
 CLIENT1_BIN = os.path.join(BUILD_DIR, "client1")
@@ -46,33 +52,9 @@ def _cleanup_ipc():
 
 def _cleanup_orphan_servers():
     """Best-effort kill for orphaned server instances from this workspace build."""
-    try:
-        ps_out = subprocess.check_output(["ps", "-eo", "pid=,args="], text=True)
-    except Exception:
-        return
-
-    target_prefix = f"{SERVER_BIN} "
-    target_exact = SERVER_BIN
-    pids = []
-    for line in ps_out.splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        parts = line.split(None, 1)
-        if len(parts) != 2:
-            continue
-        pid_str, args = parts
-        if args == target_exact or args.startswith(target_prefix):
-            try:
-                pid = int(pid_str)
-            except ValueError:
-                continue
-            if pid != os.getpid():
-                pids.append(pid)
-
+    pids = _list_workspace_server_pids()
     if not pids:
         return
-
     for pid in pids:
         try:
             os.kill(pid, signal.SIGTERM)
@@ -93,17 +75,58 @@ def _cleanup_orphan_servers():
     time.sleep(0.1)
 
 
+def _list_workspace_server_pids():
+    """List running server PIDs for this workspace build path."""
+    try:
+        ps_out = subprocess.check_output(["ps", "-eo", "pid=,args="], text=True)
+    except Exception:
+        return []
+
+    target_prefix = f"{SERVER_BIN} "
+    target_exact = SERVER_BIN
+    pids = []
+    for line in ps_out.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        parts = line.split(None, 1)
+        if len(parts) != 2:
+            continue
+        pid_str, args = parts
+        if args == target_exact or args.startswith(target_prefix):
+            try:
+                pid = int(pid_str)
+            except ValueError:
+                continue
+            if pid != os.getpid():
+                pids.append(pid)
+
+    return pids
+
+
+def _ensure_no_external_server_running(context, allowed_pids=None):
+    allowed = set(allowed_pids or [])
+    pids = [pid for pid in _list_workspace_server_pids() if pid not in allowed]
+    if pids:
+        raise RuntimeError(
+            f"{context}: external server process(es) detected: {pids}. "
+            "Stop manual server instances before running pytest."
+        )
+
+
 @pytest.fixture(scope="module", autouse=True)
 def _module_server_guard():
-    _cleanup_orphan_servers()
+    _ensure_no_external_server_running("test_server_threads module startup")
     _cleanup_ipc()
-    yield
-    _cleanup_orphan_servers()
-    _cleanup_ipc()
+    try:
+        yield
+    finally:
+        _ensure_no_external_server_running("test_server_threads module teardown")
+        _cleanup_ipc()
 
 
 def _start_server(*extra_args):
-    _cleanup_orphan_servers()
+    _ensure_no_external_server_running("_start_server preflight")
     _cleanup_ipc()
     proc = subprocess.Popen(
         [SERVER_BIN, *extra_args],
@@ -681,6 +704,71 @@ class TestMathFunctionBatches:
                 _stop_server(proc)
             _cleanup_ipc()
 
+
+class TestHarnessGuards:
+    """Guard behavior for external-server preflight and pytest lock checks."""
+
+    def test_preflight_detects_external_server(self):
+        """Preflight should fail clearly when a manual server is already running."""
+        manual = subprocess.Popen(
+            [SERVER_BIN, "-t", "1"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            cwd=BUILD_DIR,
+            start_new_session=True,
+        )
+        try:
+            # Wait until manual server is up.
+            for _ in range(50):
+                if os.path.exists(SHM_PATH):
+                    break
+                time.sleep(0.1)
+            else:
+                pytest.fail("Manual server did not create shared memory in time")
+
+            with pytest.raises(RuntimeError, match="external server process\\(es\\) detected"):
+                _ensure_no_external_server_running("preflight-check")
+        finally:
+            if manual.poll() is None:
+                try:
+                    os.killpg(manual.pid, signal.SIGINT)
+                except ProcessLookupError:
+                    pass
+                try:
+                    manual.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    try:
+                        os.killpg(manual.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                    manual.wait(timeout=2)
+            _cleanup_ipc()
+
+    def test_preflight_allows_fixture_owned_server_pid(self):
+        """Preflight should allow exactly the fixture-owned server PID."""
+        proc = _start_server("-t", "1")
+        try:
+            _ensure_no_external_server_running("owned-server-check", allowed_pids={proc.pid})
+        finally:
+            if proc.poll() is None:
+                _stop_server(proc)
+            _cleanup_ipc()
+
+    def test_pytest_lock_conflict_detected(self):
+        """Second lock acquisition should fail while first holder owns it."""
+        first_fd = try_acquire_lock_for_tests(PYTEST_LOCK_FILE)
+        try:
+            assert first_fd is not None
+            second_fd = try_acquire_lock_for_tests(PYTEST_LOCK_FILE)
+            assert second_fd is None
+        finally:
+            if first_fd is not None:
+                release_test_run_lock(first_fd)
+
+
+class TestMathFunctionBatchesContd:
+    """Continuation of dedicated high-coverage numeric batch tests."""
+
     def test_subtract_batch_extensive_sync(self):
         """Run a broad blocking subtract batch with edge-oriented int32 coverage."""
         cases = [
@@ -770,7 +858,9 @@ class TestMathFunctionBatches:
                         "label": f"multiply#{case_idx}({a},{b})",
                     })
 
-                self._collect_async_math_results(lib, pending, timeout_sec=35.0)
+                TestMathFunctionBatches._collect_async_math_results(
+                    lib, pending, timeout_sec=35.0
+                )
         finally:
             lib.ipc_cleanup()
             if proc.poll() is None:
@@ -823,7 +913,47 @@ class TestMathFunctionBatches:
                         "label": f"divide#{case_idx}({a},{b})",
                     })
 
-                self._collect_async_math_results(lib, pending, timeout_sec=35.0)
+                TestMathFunctionBatches._collect_async_math_results(
+                    lib, pending, timeout_sec=35.0
+                )
+        finally:
+            lib.ipc_cleanup()
+            if proc.poll() is None:
+                _stop_server(proc)
+            _cleanup_ipc()
+
+    def test_blocking_math_not_corrupted_by_previous_async_completion(self):
+        """A completed async op must not corrupt the next blocking math response."""
+        proc = _start_server("-t", "2", "--shutdown=drain")
+        lib = _load_ipc_lib()
+        try:
+            assert lib.ipc_init() == 0
+
+            req_id = ctypes.c_uint64()
+            assert lib.ipc_multiply(7, 8, ctypes.byref(req_id)) == 0
+
+            result_buf = (ctypes.c_byte * 64)()
+            status = ctypes.c_int()
+            got_async = False
+            for _ in range(40):
+                rc = lib.ipc_get_result(req_id.value, result_buf, ctypes.byref(status))
+                if rc == 0:
+                    assert status.value == IPC_STATUS_OK
+                    async_result = ctypes.cast(
+                        result_buf, ctypes.POINTER(ctypes.c_int32)
+                    ).contents.value
+                    assert async_result == 56
+                    got_async = True
+                    break
+                assert rc == IPC_NOT_READY
+                time.sleep(0.1)
+            assert got_async
+
+            # Historically, this call could return stale slot data (e.g. large random number).
+            out = ctypes.c_int32()
+            rc = lib.ipc_subtract(12, 2, ctypes.byref(out))
+            assert rc == 0
+            assert out.value == 10
         finally:
             lib.ipc_cleanup()
             if proc.poll() is None:

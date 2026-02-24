@@ -198,6 +198,14 @@ cmake --build build --target test
 .venv/bin/pytest -v tests/test_server_threads.py
 ```
 
+Important test preconditions:
+- Do not run a manual `build/server` while running pytest. The test harness now
+  fails fast if an external server process is detected.
+- IPC tests use a global pytest lock at `/tmp/ipc_pytest.lock` to prevent
+  concurrent test invocations against shared POSIX IPC names.
+- If you see a lock conflict, wait for the other pytest run to finish (or
+  terminate stale pytest processes) and rerun.
+
 `make test` now bootstraps `.venv`, installs `pytest`, and re-runs CMake configure
 before building the test target, so it works in fresh clones without manual setup.
 

@@ -227,7 +227,8 @@ static void process_math(int slot_idx)
     slot->state = IPC_SLOT_RESPONSE_READY;
     sem_post(g_mutex_sem);
 
-    sem_post(g_slot_sems[slot_idx]);
+    if (cmd == IPC_CMD_ADD || cmd == IPC_CMD_SUB)
+        sem_post(g_slot_sems[slot_idx]);
 }
 
 static void process_string(int slot_idx)
@@ -276,7 +277,7 @@ static void process_string(int slot_idx)
     slot->state = IPC_SLOT_RESPONSE_READY;
     sem_post(g_mutex_sem);
 
-    sem_post(g_slot_sems[slot_idx]);
+    // String operations are async-only in this project and are collected via polling.
 }
 
 /* ================================================================== */

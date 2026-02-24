@@ -253,14 +253,34 @@ static int blocking_math(ipc_cmd_t cmd, int32_t a, int32_t b, int32_t *result)
     payload.math.b = b;
 
     int slot_idx = -1;
-    int submit_rc = submit_request(cmd, &payload, &slot_idx, nullptr);
+    uint64_t expected_request_id = 0;
+    int submit_rc = submit_request(cmd, &payload, &slot_idx, &expected_request_id);
     if (submit_rc != 0)
         return submit_rc;
-    static constexpr int kMaxSlotWaitTimeoutRetries = 8;
+    // Blocking calls are completed via per-slot semaphores. Validate that the slot
+    // truly contains this request's response to guard against stale semaphore wakeups.
+    static constexpr int kMaxSlotWaitTimeoutRetries = 16;
     int retries = 0;
     while (retries < kMaxSlotWaitTimeoutRetries) {
-        if (sem_wait_with_timeout(g_slot_sems[slot_idx], 1) == 0)
-            break;
+        if (sem_wait_with_timeout(g_slot_sems[slot_idx], 1) == 0) {
+            int rc = lock_shared_mutex_with_recovery();
+            if (rc != 0)
+                return rc;
+
+            MessageSlot *slot = &g_shm->slots[slot_idx];
+            if (slot->request_id == expected_request_id &&
+                slot->state == IPC_SLOT_RESPONSE_READY) {
+                *result = slot->response.math_result;
+                int ret = (slot->status == IPC_STATUS_OK) ? 0 : -1;
+                slot->state = IPC_SLOT_FREE;
+                sem_post(g_mutex_sem);
+                return ret;
+            }
+
+            sem_post(g_mutex_sem);
+            ++retries;
+            continue;
+        }
         if (errno == ETIMEDOUT) {
             int rc = ensure_fresh_connection();
             if (rc != 0)
@@ -272,17 +292,7 @@ static int blocking_math(ipc_cmd_t cmd, int32_t a, int32_t b, int32_t *result)
     }
     if (retries >= kMaxSlotWaitTimeoutRetries)
         return reconnect_after_server_restart();
-
-    int rc = lock_shared_mutex_with_recovery();
-    if (rc != 0)
-        return rc;
-    MessageSlot *slot = &g_shm->slots[slot_idx];
-    *result = slot->response.math_result;
-    int ret = (slot->status == IPC_STATUS_OK) ? 0 : -1;
-    slot->state = IPC_SLOT_FREE;
-    sem_post(g_mutex_sem);
-
-    return ret;
+    return -1;
 }
 
 extern "C" int ipc_add(int32_t a, int32_t b, int32_t *result)
