@@ -286,12 +286,25 @@ def run_client_with_delays(client_name, input_groups, timeout=15):
     )
 
     for inputs, delay in input_groups:
+        if proc.poll() is not None:
+            break
         data = "\n".join(str(i) for i in inputs) + "\n"
-        proc.stdin.write(data.encode())
-        proc.stdin.flush()
+        try:
+            proc.stdin.write(data.encode())
+            proc.stdin.flush()
+        except (BrokenPipeError, ValueError):
+            # Client exited early; collect whatever output is available.
+            break
         if delay > 0:
             time.sleep(delay)
 
-    proc.stdin.close()
+    # Python 3.13+ may flush stdin inside communicate(); avoid "flush of closed file"
+    # after we intentionally close stdin for interactive client scripts.
+    if proc.stdin is not None:
+        try:
+            proc.stdin.close()
+        except Exception:
+            pass
+        proc.stdin = None
     stdout, stderr = proc.communicate(timeout=timeout)
     return stdout.decode(), stderr.decode(), proc.returncode

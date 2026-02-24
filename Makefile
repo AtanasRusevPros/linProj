@@ -81,7 +81,7 @@ deps:
 	@echo "  - C++ compiler with C++17 support (g++)"
 	@echo "  - CMake >= 3.14"
 	@echo "  - POSIX runtime libs (pthread, rt) [usually provided by libc/dev toolchain]"
-	@echo "  - Python 3"
+	@echo "  - Python 3.10+ (tested on 3.10-3.14)"
 	@echo "  - python3-venv"
 	@echo "  - pip package: pytest (installed by 'make test')"
 	@echo ""
