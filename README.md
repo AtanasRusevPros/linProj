@@ -60,10 +60,10 @@ before multiply results, showing out-of-order completion.
 
 ### Prerequisites
 
-- Linux (tested on Manjaro/Arch)
+- Linux (tested on Manjaro and Debian13)
 - GCC/G++ with C++17 support
 - CMake >= 3.14
-- Python 3 + pytest (for tests)
+- Python 3.10 or later + pytest (for tests)
 - Doxygen + Sphinx + Breathe (for documentation, optional)
 
 ### Build Commands
@@ -84,7 +84,38 @@ make doxygen      # generate Doxygen documentation only
 make cppcheck     # run cppcheck static analysis
 make cppcheck-deep # run exhaustive cppcheck analysis (slower)
 make venv         # create .venv and install Python dependencies
+make deps         # print required/optional dependencies
 make help         # show all available targets
+```
+
+### Dependency Guide
+
+The `make deps` target prints the authoritative dependency list:
+
+```bash
+make deps
+```
+
+Expected categories:
+- Required (build + run + tests):
+  - C++ compiler with C++17 support (`g++`)
+  - CMake >= 3.14
+  - POSIX runtime libs (`pthread`, `rt`) (usually provided by libc/dev toolchain)
+  - Python 3.10+ (tested on 3.10-3.14)
+  - `python3-venv`
+  - pip package: `pytest` (installed by `make test`)
+- Optional (documentation):
+  - `doxygen`
+  - `sphinx-build`
+  - pip packages: `sphinx`, `breathe` (installed by `make docs` into `.venv`)
+- Optional (static analysis):
+  - `cppcheck`
+
+Debian/Ubuntu quick install:
+
+```bash
+sudo apt update && sudo apt install -y build-essential cmake python3 python3-venv
+sudo apt install -y doxygen sphinx-doc cppcheck
 ```
 
 Or use CMake directly:
@@ -199,19 +230,19 @@ cmake --build build --target test
 ```
 
 Important test preconditions:
-- Do not run a manual `build/server` while running pytest. The test harness now
-  fails fast if an external server process is detected.
+- Do not run a manual `build/server` while running pytest. The test harness
+  fails if an external server process is detected.
 - IPC tests use a global pytest lock at `/tmp/ipc_pytest.lock` to prevent
   concurrent test invocations against shared POSIX IPC names.
 - If you see a lock conflict, wait for the other pytest run to finish (or
   terminate stale pytest processes) and rerun.
 - Startup PID diagnostics are enabled by default. Set `IPC_TEST_DEBUG_PIDS=0`
   to suppress debug lines if you need quieter pytest output.
-- Pytest now aborts immediately when an external server is detected at session
+- Pytest aborts immediately when an external server is detected at session
   start (single clear failure instead of per-test setup errors). You can
   disable this behavior with `IPC_TEST_ABORT_ON_EXTERNAL=0` for debugging only.
 
-`make test` now bootstraps `.venv`, installs `pytest`, and re-runs CMake configure
+`make test` bootstraps `.venv`, installs `pytest`, and re-runs CMake configure
 before building the test target, so it works in fresh clones without manual setup.
 
 The test setup uses two lifecycle models:
@@ -246,7 +277,7 @@ cmake --build build --target docs-sphinx
 # Output: build/docs/sphinx/index.html
 ```
 
-`make docs` now bootstraps `.venv`, installs `sphinx` + `breathe`, and re-runs
+`make docs` bootstraps `.venv`, installs `sphinx` + `breathe`, and re-runs
 CMake configure before building `docs-sphinx`.
 
 ## Static Analysis
