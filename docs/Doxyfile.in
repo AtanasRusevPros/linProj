@@ -19,6 +19,9 @@ XML_OUTPUT             = xml
 GENERATE_HTML          = YES
 HTML_OUTPUT            = html
 
+# Graph rendering (requires Graphviz "dot" in PATH)
+# If dot is missing, docs still generate but diagram assets are skipped with warnings.
+
 # Disable LaTeX by default
 GENERATE_LATEX         = NO
 

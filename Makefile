@@ -2,13 +2,17 @@
 # The real build system is CMakeLists.txt -- this just provides short targets.
 #
 # Usage:
-#   make              - incremental build (default/last configured type)
+#   make              - full pipeline: build + test + docs
+#   make build        - compile only
+#   make all          - full pipeline: build + test + docs
+#   make full         - alias for all
 #   make debug        - configure Debug + build
 #   make release      - configure Release + build
 #   make sanitize     - configure Debug + sanitizers + build
 #   make reldbg       - configure RelWithDebInfo + build
 #   make clean        - clean build artifacts
-#   make rebuild      - clean + build (equivalent of make clean all)
+#   make rebuild      - clean + build
+#   make rebuild_all  - clean + build + test + docs
 #   make test         - run pytest suite
 #   make docs         - generate Sphinx + Doxygen documentation
 #   make doxygen      - generate Doxygen documentation only
@@ -19,12 +23,17 @@
 #   make help         - show this list
 
 BUILD_DIR := build
+.DEFAULT_GOAL := all
 
-.PHONY: all debug release sanitize reldbg clean rebuild test docs doxygen cppcheck cppcheck-deep venv deps help
+.PHONY: all full build debug release sanitize reldbg clean rebuild rebuild_all test docs doxygen cppcheck cppcheck-deep venv deps help
 
-all:
+build:
 	@cmake -B $(BUILD_DIR)
 	@cmake --build $(BUILD_DIR)
+
+all: build test docs
+
+full: all
 
 debug:
 	@cmake -B $(BUILD_DIR) -DCMAKE_BUILD_TYPE=Debug -DENABLE_SANITIZERS=OFF
@@ -46,7 +55,11 @@ clean:
 	@cmake --build $(BUILD_DIR) --target clean 2>/dev/null || true
 
 rebuild:
-	@cmake --build $(BUILD_DIR) --clean-first
+	@cmake --build $(BUILD_DIR) --clean-first 2>/dev/null || true
+	@cmake -B $(BUILD_DIR)
+	@cmake --build $(BUILD_DIR)
+
+rebuild_all: clean build test docs
 
 test:
 	@python3 -m venv .venv
@@ -57,6 +70,7 @@ test:
 docs:
 	@python3 -m venv .venv
 	@.venv/bin/pip install -q sphinx breathe myst-parser
+	@command -v dot >/dev/null || (echo "Graphviz 'dot' is required for Doxygen graphs. Install graphviz and rerun 'make docs'." && exit 1)
 	@cmake -B $(BUILD_DIR)
 	@cmake --build $(BUILD_DIR) --target docs-sphinx
 
@@ -87,6 +101,7 @@ deps:
 	@echo ""
 	@echo "Optional (documentation):"
 	@echo "  - doxygen"
+	@echo "  - graphviz (dot)"
 	@echo "  - sphinx-build"
 	@echo "  - pip packages: sphinx, breathe, myst-parser (installed by 'make docs' into .venv)"
 	@echo ""
@@ -97,17 +112,20 @@ deps:
 	@echo "  sudo apt update && sudo apt install -y build-essential cmake python3 python3-venv"
 	@echo ""
 	@echo "Debian/Ubuntu optional extras:"
-	@echo "  sudo apt install -y doxygen sphinx-doc cppcheck"
+	@echo "  sudo apt install -y doxygen graphviz sphinx-doc cppcheck"
 
 help:
 	@echo "This is a simple Makefile wrapper around CMake. Available targets:"
-	@echo "  all       - incremental build (default configuration)"
+	@echo "  build     - compile only (default build configuration)"
+	@echo "  all       - full pipeline: build + test + docs"
+	@echo "  full      - alias for all"
 	@echo "  debug     - Debug build (-g -O0, for GDB)"
 	@echo "  release   - Release build (-O3, for production)"
 	@echo "  sanitize  - Debug + AddressSanitizer + UBSan"
 	@echo "  reldbg    - RelWithDebInfo (-O2 -g, for profiling)"
 	@echo "  clean     - remove build artifacts"
 	@echo "  rebuild   - clean + rebuild"
+	@echo "  rebuild_all - clean + build + test + docs"
 	@echo "  test      - run pytest integration tests"
 	@echo "  docs      - generate Sphinx + Doxygen documentation"
 	@echo "  doxygen   - generate Doxygen documentation only"

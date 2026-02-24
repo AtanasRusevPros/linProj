@@ -71,13 +71,17 @@ before multiply results, showing out-of-order completion.
 A wrapper `Makefile` provides shortcuts for the most common commands:
 
 ```bash
-make              # incremental build (default configuration)
+make              # full pipeline: build + test + docs
+make build        # compile only (default build configuration)
+make all          # full pipeline: build + test + docs
+make full         # alias for all
 make debug        # Debug build (-g -O0, for GDB)
 make release      # Release build (-O3, for production)
 make sanitize     # Debug + AddressSanitizer + UBSan
 make reldbg       # RelWithDebInfo (-O2 -g, for profiling)
 make clean        # remove build artifacts
 make rebuild      # clean + rebuild
+make rebuild_all  # clean + build + test + docs
 make test         # run pytest integration tests
 make docs         # generate Sphinx + Doxygen documentation
 make doxygen      # generate Doxygen documentation only
@@ -106,6 +110,7 @@ Expected categories:
   - pip package: `pytest` (installed by `make test`)
 - Optional (documentation):
   - `doxygen`
+  - `graphviz` (`dot`)
   - `sphinx-build`
   - pip packages: `sphinx`, `breathe`, `myst-parser` (installed by `make docs` into `.venv`)
 - Optional (static analysis):
@@ -115,7 +120,7 @@ Debian/Ubuntu quick install:
 
 ```bash
 sudo apt update && sudo apt install -y build-essential cmake python3 python3-venv
-sudo apt install -y doxygen sphinx-doc cppcheck
+sudo apt install -y doxygen graphviz sphinx-doc cppcheck
 ```
 
 Or use CMake directly:
@@ -284,7 +289,7 @@ rm -f /dev/shm/ipc_shm /dev/shm/sem.ipc_* /tmp/ipc_server.lock
 ### Doxygen
 
 ```bash
-# Install: sudo pacman -S doxygen (Arch/Manjaro)
+# Install: sudo pacman -S doxygen graphviz (Arch/Manjaro)
 cmake --build build --target docs-doxygen
 # Output: build/docs/doxygen/html/index.html
 ```
@@ -297,8 +302,9 @@ cmake --build build --target docs-sphinx
 # Output: build/docs/sphinx/index.html
 ```
 
-`make docs` bootstraps `.venv`, installs `sphinx` + `breathe` + `myst-parser`, and re-runs
-CMake configure before building `docs-sphinx`.
+`make docs` bootstraps `.venv`, installs `sphinx` + `breathe` + `myst-parser`,
+checks for Graphviz `dot`, and re-runs CMake configure before building
+`docs-sphinx`.
 
 ## Static Analysis
 
