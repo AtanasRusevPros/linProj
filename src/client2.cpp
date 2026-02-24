@@ -179,7 +179,6 @@ int main()
     bool running = true;
 
     while (running) {
-        check_pending(pending);
         if (pre_menu_restart_probe(pending))
             continue;
 

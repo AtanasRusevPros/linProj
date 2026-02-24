@@ -145,3 +145,23 @@ class TestNonBlockingOrdering:
         assert "Result is 56!" in stdout
 
 
+class TestManualAsyncRetrievalMode:
+    """Ensure async results are consumed only via explicit command 4."""
+
+    def test_client1_does_not_auto_consume_async_result(self):
+        stdout, _, rc = run_client_with_delays("client1", [
+            ([2, 7, 8], 3.0),  # submit async multiply and let it finish
+            ([5], 0),          # exit without explicit check
+        ])
+        assert rc == 0
+        assert "Request ID:" in stdout
+        assert "Result is 56!" not in stdout
+
+    def test_client2_does_not_auto_consume_async_result(self):
+        stdout, _, rc = run_client_with_delays("client2", [
+            ([2, 12, 3], 3.0),  # submit async divide and let it finish
+            ([5], 0),           # exit without explicit check
+        ])
+        assert rc == 0
+        assert "Request ID:" in stdout
+        assert "Result is 4!" not in stdout
