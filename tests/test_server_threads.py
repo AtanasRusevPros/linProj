@@ -23,6 +23,7 @@ IPC_MAX_SLOTS = 16
 IPC_NOT_READY = 1
 IPC_ERR_SERVER_RESTARTED = -2
 IPC_STATUS_OK = 0
+IPC_STATUS_DIV_BY_ZERO = 1
 
 pytestmark = pytest.mark.self_managed_server
 
@@ -590,3 +591,242 @@ class TestClientRestartUx:
             if server.poll() is None:
                 _stop_server(server)
             _cleanup_ipc()
+
+
+class TestMathFunctionBatches:
+    """Dedicated high-coverage numeric batches for each math function."""
+
+    @staticmethod
+    def _collect_async_math_results(lib, pending, timeout_sec=30.0, poll_interval=0.05):
+        """Poll async math results until all requests complete or timeout."""
+        deadline = time.time() + timeout_sec
+        result_buf = (ctypes.c_byte * 64)()
+        status = ctypes.c_int()
+        remaining = list(pending)
+
+        while remaining and time.time() < deadline:
+            next_remaining = []
+            for item in remaining:
+                rc = lib.ipc_get_result(item["request_id"], result_buf, ctypes.byref(status))
+                if rc == 0:
+                    got_status = status.value
+                    assert got_status == item["expected_status"], (
+                        f"Unexpected status for case {item['label']}: "
+                        f"got {got_status}, expected {item['expected_status']}"
+                    )
+                    if got_status == IPC_STATUS_OK:
+                        got_value = ctypes.cast(
+                            result_buf, ctypes.POINTER(ctypes.c_int32)
+                        ).contents.value
+                        assert got_value == item["expected_result"], (
+                            f"Unexpected result for case {item['label']}: "
+                            f"got {got_value}, expected {item['expected_result']}"
+                        )
+                elif rc == IPC_NOT_READY:
+                    next_remaining.append(item)
+                else:
+                    assert False, (
+                        f"ipc_get_result failed for case {item['label']}, "
+                        f"request_id={item['request_id']}, rc={rc}"
+                    )
+            remaining = next_remaining
+            if remaining:
+                time.sleep(poll_interval)
+
+        assert not remaining, (
+            "Timed out waiting for async results: "
+            + ", ".join(item["label"] for item in remaining)
+        )
+
+    def test_add_batch_extensive_sync(self):
+        """Run a broad blocking add batch with edge-oriented int32 coverage."""
+        cases = [
+            (1, 2, 3),
+            (10, 0, 10),
+            (0, 0, 0),
+            (-1, -2, -3),
+            (-10, 5, -5),
+            (5, -10, -5),
+            (12345, 6789, 19134),
+            (-12345, 6789, -5556),
+            (12345, -6789, 5556),
+            (-12345, -6789, -19134),
+            (2147483647, 0, 2147483647),
+            (-2147483648, 0, -2147483648),
+            (2147483646, 1, 2147483647),
+            (-2147483647, -1, -2147483648),
+            (2147483640, 7, 2147483647),
+            (-2147483640, -8, -2147483648),
+            (2000000000, 147483647, 2147483647),
+            (-2000000000, -147483648, -2147483648),
+            (1073741823, 1073741824, 2147483647),
+            (-1073741824, -1073741824, -2147483648),
+        ]
+
+        proc = _start_server("-t", "2", "--shutdown=drain")
+        lib = _load_ipc_lib()
+        try:
+            assert lib.ipc_init() == 0
+            for idx, (a, b, expected) in enumerate(cases):
+                out = ctypes.c_int32()
+                rc = lib.ipc_add(a, b, ctypes.byref(out))
+                assert rc == 0, f"ipc_add failed for case#{idx}: {a} + {b}"
+                assert out.value == expected, (
+                    f"Wrong add result for case#{idx}: {a} + {b} -> "
+                    f"{out.value}, expected {expected}"
+                )
+        finally:
+            lib.ipc_cleanup()
+            if proc.poll() is None:
+                _stop_server(proc)
+            _cleanup_ipc()
+
+    def test_subtract_batch_extensive_sync(self):
+        """Run a broad blocking subtract batch with edge-oriented int32 coverage."""
+        cases = [
+            (5, 2, 3),
+            (10, 0, 10),
+            (0, 0, 0),
+            (-5, -2, -3),
+            (-5, 2, -7),
+            (5, -2, 7),
+            (12345, 6789, 5556),
+            (-12345, 6789, -19134),
+            (12345, -6789, 19134),
+            (-12345, -6789, -5556),
+            (2147483647, 0, 2147483647),
+            (-2147483648, 0, -2147483648),
+            (2147483647, 1, 2147483646),
+            (-2147483648, -1, -2147483647),
+            (2147483640, -7, 2147483647),
+            (-2147483640, 8, -2147483648),
+            (2000000000, -147483647, 2147483647),
+            (-2000000000, 147483648, -2147483648),
+            (1073741824, -1073741823, 2147483647),
+            (-1073741824, 1073741824, -2147483648),
+        ]
+
+        proc = _start_server("-t", "2", "--shutdown=drain")
+        lib = _load_ipc_lib()
+        try:
+            assert lib.ipc_init() == 0
+            for idx, (a, b, expected) in enumerate(cases):
+                out = ctypes.c_int32()
+                rc = lib.ipc_subtract(a, b, ctypes.byref(out))
+                assert rc == 0, f"ipc_subtract failed for case#{idx}: {a} - {b}"
+                assert out.value == expected, (
+                    f"Wrong subtract result for case#{idx}: {a} - {b} -> "
+                    f"{out.value}, expected {expected}"
+                )
+        finally:
+            lib.ipc_cleanup()
+            if proc.poll() is None:
+                _stop_server(proc)
+            _cleanup_ipc()
+
+    def test_multiply_batch_extensive_async(self):
+        """Submit and validate multiply batches with diverse sign/boundary cases."""
+        cases = [
+            (1, 2, 2),
+            (10, 0, 0),
+            (0, -99, 0),
+            (-1, -2, 2),
+            (-10, 5, -50),
+            (5, -10, -50),
+            (1234, 567, 699678),
+            (-1234, 567, -699678),
+            (1234, -567, -699678),
+            (-1234, -567, 699678),
+            (46340, 46340, 2147395600),
+            (-46340, 46340, -2147395600),
+            (-46340, -46340, 2147395600),
+            (2147483647, 1, 2147483647),
+            (-2147483648, 1, -2147483648),
+            (1073741823, 2, 2147483646),
+            (-1073741824, 2, -2147483648),
+            (715827882, 3, 2147483646),
+            (-715827882, 3, -2147483646),
+            (32768, 65535, 2147450880),
+        ]
+
+        proc = _start_server("-t", "2", "--shutdown=drain")
+        lib = _load_ipc_lib()
+        try:
+            assert lib.ipc_init() == 0
+
+            wave_size = 12
+            for wave_start in range(0, len(cases), wave_size):
+                pending = []
+                wave = cases[wave_start:wave_start + wave_size]
+                for offset, (a, b, expected) in enumerate(wave):
+                    case_idx = wave_start + offset
+                    req_id = ctypes.c_uint64()
+                    rc = lib.ipc_multiply(a, b, ctypes.byref(req_id))
+                    assert rc == 0, f"ipc_multiply submit failed for case#{case_idx}"
+                    pending.append({
+                        "request_id": req_id.value,
+                        "expected_status": IPC_STATUS_OK,
+                        "expected_result": expected,
+                        "label": f"multiply#{case_idx}({a},{b})",
+                    })
+
+                self._collect_async_math_results(lib, pending, timeout_sec=35.0)
+        finally:
+            lib.ipc_cleanup()
+            if proc.poll() is None:
+                _stop_server(proc)
+            _cleanup_ipc()
+
+    def test_divide_batch_extensive_async(self):
+        """Submit and validate divide batches including divide-by-zero handling."""
+        cases = [
+            (10, 2, IPC_STATUS_OK, 5),
+            (10, 3, IPC_STATUS_OK, 3),
+            (10, -3, IPC_STATUS_OK, -3),
+            (-10, 3, IPC_STATUS_OK, -3),
+            (-10, -3, IPC_STATUS_OK, 3),
+            (0, 3, IPC_STATUS_OK, 0),
+            (1, 1, IPC_STATUS_OK, 1),
+            (-1, 1, IPC_STATUS_OK, -1),
+            (1, -1, IPC_STATUS_OK, -1),
+            (-1, -1, IPC_STATUS_OK, 1),
+            (2147483647, 1, IPC_STATUS_OK, 2147483647),
+            (-2147483648, 1, IPC_STATUS_OK, -2147483648),
+            (2147483647, -1, IPC_STATUS_OK, -2147483647),
+            (-2147483647, -1, IPC_STATUS_OK, 2147483647),
+            (2000000000, 7, IPC_STATUS_OK, 285714285),
+            (-2000000000, 7, IPC_STATUS_OK, -285714285),
+            (123456789, 1000, IPC_STATUS_OK, 123456),
+            (-123456789, 1000, IPC_STATUS_OK, -123456),
+            (10, 0, IPC_STATUS_DIV_BY_ZERO, None),
+            (-10, 0, IPC_STATUS_DIV_BY_ZERO, None),
+        ]
+
+        proc = _start_server("-t", "2", "--shutdown=drain")
+        lib = _load_ipc_lib()
+        try:
+            assert lib.ipc_init() == 0
+
+            wave_size = 12
+            for wave_start in range(0, len(cases), wave_size):
+                pending = []
+                wave = cases[wave_start:wave_start + wave_size]
+                for offset, (a, b, expected_status, expected_result) in enumerate(wave):
+                    case_idx = wave_start + offset
+                    req_id = ctypes.c_uint64()
+                    rc = lib.ipc_divide(a, b, ctypes.byref(req_id))
+                    assert rc == 0, f"ipc_divide submit failed for case#{case_idx}"
+                    pending.append({
+                        "request_id": req_id.value,
+                        "expected_status": expected_status,
+                        "expected_result": expected_result,
+                        "label": f"divide#{case_idx}({a},{b})",
+                    })
+
+                self._collect_async_math_results(lib, pending, timeout_sec=35.0)
+        finally:
+            lib.ipc_cleanup()
+            if proc.poll() is None:
+                _stop_server(proc)
+            _cleanup_ipc()
+
