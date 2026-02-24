@@ -15,11 +15,12 @@
 #   make cppcheck     - run cppcheck static analysis
 #   make cppcheck-deep - run exhaustive cppcheck analysis
 #   make venv         - create Python venv and install pytest
+#   make deps         - print required/optional dependencies
 #   make help         - show this list
 
 BUILD_DIR := build
 
-.PHONY: all debug release sanitize reldbg clean rebuild test docs doxygen cppcheck cppcheck-deep venv help
+.PHONY: all debug release sanitize reldbg clean rebuild test docs doxygen cppcheck cppcheck-deep venv deps help
 
 all:
 	@cmake -B $(BUILD_DIR)
@@ -73,6 +74,31 @@ venv:
 	@.venv/bin/pip install pytest sphinx breathe
 	@echo "Venv created. Reconfigure: cmake -B $(BUILD_DIR)"
 
+deps:
+	@echo "Project dependency guide"
+	@echo ""
+	@echo "Required (build + run + tests):"
+	@echo "  - C++ compiler with C++17 support (g++)"
+	@echo "  - CMake >= 3.14"
+	@echo "  - POSIX runtime libs (pthread, rt) [usually provided by libc/dev toolchain]"
+	@echo "  - Python 3"
+	@echo "  - python3-venv"
+	@echo "  - pip package: pytest (installed by 'make test')"
+	@echo ""
+	@echo "Optional (documentation):"
+	@echo "  - doxygen"
+	@echo "  - sphinx-build"
+	@echo "  - pip packages: sphinx, breathe (installed by 'make docs' into .venv)"
+	@echo ""
+	@echo "Optional (static analysis):"
+	@echo "  - cppcheck"
+	@echo ""
+	@echo "Debian/Ubuntu quick install (base):"
+	@echo "  sudo apt update && sudo apt install -y build-essential cmake python3 python3-venv"
+	@echo ""
+	@echo "Debian/Ubuntu optional extras:"
+	@echo "  sudo apt install -y doxygen sphinx-doc cppcheck"
+
 help:
 	@echo "This is a simple Makefile wrapper around CMake. Available targets:"
 	@echo "  all       - incremental build (default configuration)"
@@ -88,4 +114,5 @@ help:
 	@echo "  cppcheck  - run cppcheck static analysis"
 	@echo "  cppcheck-deep - run exhaustive cppcheck static analysis"
 	@echo "  venv      - create .venv and install Python dependencies"
+	@echo "  deps      - print required/optional dependencies"
 	@echo "  help      - show this help"
