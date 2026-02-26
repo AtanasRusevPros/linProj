@@ -502,10 +502,6 @@ linProj/
 │       ├── conf.py                # Sphinx + Breathe config
 │       ├── index.rst              # Documentation root
 │       └── overview.md            # Includes README as overview
-├── p_test2/
-│   ├── client_concepts.md         # Client concepts and linkage notes
-│   ├── ipc_shared_memory_primer.md # Shared-memory protocol primer
-│   └── ...                        # Additional project primers/notes
 └── tests/
     ├── conftest.py                # Pytest fixtures (server lifecycle)
     ├── test_client_server.py      # Integration tests
