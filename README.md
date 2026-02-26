@@ -24,6 +24,11 @@ This eliminates the need for request/response correlation (no scanning or
 ring buffer complexity). Blocking calls wait on a per-slot semaphore; non-blocking
 calls return immediately and poll the slot state via `ipc_get_result()`.
 
+To keep naming and validation logic consistent across components, shared helpers
+live in `include/ipc_defs.h`:
+- `ipc_slot_sem_name(...)` builds slot semaphore names from `IPC_SLOT_SEM_PREFIX`.
+- `ipc_validate_string(...)` validates the 1..16 string input constraint.
+
 ### Synchronization Strategy
 
 All inter-process synchronization uses **named POSIX semaphores**:
@@ -220,6 +225,29 @@ Client 2 follows the same restart policy as Client 1.
   - subtract/divide operands are integer-only (`int32_t`) at the CLI,
   - search substring/string inputs must each be 1..16 characters.
 
+Client 2 runtime library resolution order:
+1. `IPC_LIB_PATH` environment variable (if set),
+2. `./libipc.so` (current working directory),
+3. `libipc.so` via standard dynamic-loader search paths.
+
+Examples:
+
+```bash
+# Local build directory usage
+cd build && ./client2
+
+# Explicit override (absolute path recommended)
+IPC_LIB_PATH=/opt/ipc/lib/libipc.so ./build/client2
+
+# System-installed library path fallback (after install/ldconfig)
+unset IPC_LIB_PATH
+./build/client2
+```
+
+Both clients now share common CLI and restart helpers via `src/client_common.h`
+(`PendingRequest`, input parsing helpers, pre-menu restart probe, and pending
+re-submit flow), while command-specific result formatting stays in each client.
+
 ### Runtime Constraints
 
 - Numeric CLI inputs are integer-only (`int32_t`) in both clients.
@@ -233,6 +261,110 @@ Client 2 follows the same restart policy as Client 1.
   - at most 16 in-flight requests can exist at once (`IPC_MAX_SLOTS`),
   - additional submissions fail with a no-free-slots error.
 - Divide-by-zero is reported as an operation status error, not a numeric result.
+
+## Third-Party Client Quickstart
+
+This section is a practical template for building your own client against
+`libipc.so`.
+
+### Option A: Direct Link (recommended)
+
+Minimal source (`my_client.cpp`):
+
+```cpp
+#include "libipc.h"
+#include <cstdio>
+#include <cstdint>
+
+int main() {
+    if (ipc_init() != 0) {
+        std::fprintf(stderr, "ipc_init failed (is server running?)\n");
+        return 1;
+    }
+
+    int32_t sum = 0;
+    int rc = ipc_add(20, 22, &sum);
+    if (rc == 0) {
+        std::printf("20 + 22 = %d\n", sum);
+    } else if (rc == IPC_ERR_SERVER_RESTARTED) {
+        std::printf("Server restarted; retry request.\n");
+    } else {
+        std::printf("ipc_add failed.\n");
+    }
+
+    ipc_cleanup();
+    return 0;
+}
+```
+
+Build from project root (using built artifacts in `build/`):
+
+```bash
+g++ -std=c++17 -Iinclude -Isrc my_client.cpp -Lbuild -lipc -Wl,-rpath,'$ORIGIN/build' -o my_client
+```
+
+### Option B: Runtime Loading (`dlopen`)
+
+Use this when the library path is chosen at runtime.
+
+```cpp
+#include "ipc_defs.h"
+#include <dlfcn.h>
+#include <cstdio>
+#include <cstdint>
+
+using ipc_init_fn = int (*)();
+using ipc_cleanup_fn = void (*)();
+using ipc_add_fn = int (*)(int32_t, int32_t, int32_t *);
+
+int main() {
+    void *h = nullptr;
+    if (const char *p = std::getenv("IPC_LIB_PATH"); p && *p) {
+        h = dlopen(p, RTLD_NOW);          // 1) explicit override
+    }
+    if (!h) h = dlopen("./libipc.so", RTLD_NOW);       // 2) local path (run from build/)
+    if (!h) h = dlopen("libipc.so", RTLD_NOW);         // 3) standard paths
+    if (!h) {
+        std::fprintf(stderr, "dlopen failed: %s\n", dlerror());
+        return 1;
+    }
+
+    auto fn_init = reinterpret_cast<ipc_init_fn>(dlsym(h, "ipc_init"));
+    auto fn_cleanup = reinterpret_cast<ipc_cleanup_fn>(dlsym(h, "ipc_cleanup"));
+    auto fn_add = reinterpret_cast<ipc_add_fn>(dlsym(h, "ipc_add"));
+    if (!fn_init || !fn_cleanup || !fn_add) {
+        std::fprintf(stderr, "dlsym failed: %s\n", dlerror());
+        dlclose(h);
+        return 1;
+    }
+
+    if (fn_init() != 0) {
+        std::fprintf(stderr, "ipc_init failed\n");
+        dlclose(h);
+        return 1;
+    }
+
+    int32_t out = 0;
+    int rc = fn_add(1, 2, &out);
+    if (rc == 0) std::printf("1 + 2 = %d\n", out);
+    fn_cleanup();
+    dlclose(h);
+    return 0;
+}
+```
+
+### Integration Notes
+
+- Call order: `ipc_init()` -> one or more `ipc_*` calls -> `ipc_cleanup()`.
+- For `dlopen` clients, use robust lookup order:
+  `IPC_LIB_PATH` -> local path -> standard paths.
+- On `IPC_ERR_SERVER_RESTARTED`, reconnect is already attempted in `libipc`; retry at app level.
+- For async APIs, handle:
+  - `0`: result ready,
+  - `IPC_NOT_READY`: keep polling,
+  - `IPC_ERR_SERVER_RESTARTED`: pending request IDs are invalid; re-submit payload.
+- Respect protocol limits (`IPC_MAX_STRING_LEN`, `IPC_MAX_SLOTS`) from `include/ipc_defs.h`.
+- Ensure server is running before client startup.
 
 ## Testing
 
@@ -354,16 +486,20 @@ linProj/
 │   ├── libipc.h                # Public C API header
 │   ├── libipc.cpp              # Library implementation
 │   ├── server.cpp              # Server with dual thread pools
+│   ├── client_common.h         # Shared client helpers (input + restart flow)
 │   ├── client1.cpp             # Client 1 (direct link)
 │   └── client2.cpp             # Client 2 (dlopen/dlsym)
-├── Makefile                       # Convenience wrapper for CMake commands
+├── Makefile                    # Convenience wrapper for CMake commands
 ├── docs/
 │   ├── Doxyfile.in                # Doxygen config template
-│   ├── server_concepts.md         # C/C++ concepts reference (server)
-│   ├── client_concepts.md         # C/C++ concepts reference (clients)
 │   └── sphinx/
 │       ├── conf.py                # Sphinx + Breathe config
-│       └── index.rst              # Documentation root
+│       ├── index.rst              # Documentation root
+│       └── overview.md            # Includes README as overview
+├── p_test2/
+│   ├── client_concepts.md         # Client concepts and linkage notes
+│   ├── ipc_shared_memory_primer.md # Shared-memory protocol primer
+│   └── ...                        # Additional project primers/notes
 └── tests/
     ├── conftest.py                # Pytest fixtures (server lifecycle)
     ├── test_client_server.py      # Integration tests

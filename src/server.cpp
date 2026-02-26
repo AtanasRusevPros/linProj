@@ -163,11 +163,6 @@ static size_t default_threads_per_pool()
     return (hw - 1) / 2;
 }
 
-static void slot_sem_name(int index, char *buf, size_t buflen)
-{
-    snprintf(buf, buflen, "%s%d", IPC_SLOT_SEM_PREFIX, index);
-}
-
 /* ================================================================== */
 /*  Signal handler                                                     */
 /* ================================================================== */
@@ -250,8 +245,7 @@ static void process_string(int slot_idx)
 
     size_t len1 = strlen(s1);
     size_t len2 = strlen(s2);
-    if (len1 < 1 || len1 > IPC_MAX_STRING_LEN ||
-        len2 < 1 || len2 > IPC_MAX_STRING_LEN) {
+    if (ipc_validate_string(s1) != 0 || ipc_validate_string(s2) != 0) {
         status = IPC_STATUS_STR_TOO_LONG;
     } else if (cmd == IPC_CMD_CONCAT) {
         if (len1 + len2 > IPC_MAX_RESULT_LEN - 1) {
@@ -290,7 +284,7 @@ static void cleanup_ipc(void)
         if (g_slot_sems[i] && g_slot_sems[i] != SEM_FAILED) {
             sem_close(g_slot_sems[i]);
             char name[64];
-            slot_sem_name(i, name, sizeof(name));
+            ipc_slot_sem_name(i, name, sizeof(name));
             sem_unlink(name);
         }
     }
@@ -416,7 +410,7 @@ int main(int argc, const char *argv[])
 
     for (int i = 0; i < IPC_MAX_SLOTS; ++i) {
         char name[64];
-        slot_sem_name(i, name, sizeof(name));
+        ipc_slot_sem_name(i, name, sizeof(name));
         g_slot_sems[i] = sem_open(name, O_CREAT | O_EXCL, 0666, 0);
         if (g_slot_sems[i] == SEM_FAILED) {
             if (errno == EEXIST) {

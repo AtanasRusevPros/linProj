@@ -25,11 +25,6 @@ static uint64_t g_known_generation = 0;
 
 /* --- Helper: build slot semaphore name --- */
 
-static void slot_sem_name(int index, char *buf, size_t buflen)
-{
-    snprintf(buf, buflen, "%s%d", IPC_SLOT_SEM_PREFIX, index);
-}
-
 static int sem_wait_with_timeout(sem_t *sem, int timeout_sec)
 {
     while (true) {
@@ -142,7 +137,7 @@ extern "C" int ipc_init(void)
 
     for (int i = 0; i < IPC_MAX_SLOTS; ++i) {
         char name[64];
-        slot_sem_name(i, name, sizeof(name));
+        ipc_slot_sem_name(i, name, sizeof(name));
         g_slot_sems[i] = sem_open(name, 0);
         if (g_slot_sems[i] == SEM_FAILED) {
             perror("ipc_init: sem_open slot");
@@ -194,14 +189,6 @@ static int find_free_slot(void)
             return i;
     }
     return -1;
-}
-
-static int validate_string(const char *s)
-{
-    if (!s) return -1;
-    size_t len = strlen(s);
-    if (len < 1 || len > IPC_MAX_STRING_LEN) return -1;
-    return 0;
 }
 
 static int submit_request(ipc_cmd_t cmd, const RequestPayload *payload,
@@ -323,7 +310,7 @@ static int async_string(ipc_cmd_t cmd, const char *s1, const char *s2,
                         uint64_t *request_id)
 {
     if (!request_id) return -1;
-    if (validate_string(s1) != 0 || validate_string(s2) != 0) {
+    if (ipc_validate_string(s1) != 0 || ipc_validate_string(s2) != 0) {
         fprintf(stderr, "async_string: invalid string length "
                 "(must be 1..%d chars)\n", IPC_MAX_STRING_LEN);
         return -1;

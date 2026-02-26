@@ -10,6 +10,8 @@
 #define IPC_DEFS_H
 
 #include <stdint.h>
+#include <stdio.h>
+#include <string.h>
 #include <sys/types.h>
 
 #ifdef __cplusplus
@@ -37,6 +39,27 @@ extern "C" {
 #define IPC_MUTEX_NAME      "/ipc_mutex"
 #define IPC_SERVER_SEM_NAME "/ipc_server_notify"
 #define IPC_SLOT_SEM_PREFIX "/ipc_slot_"
+
+/**
+ * @brief Build the named semaphore path for a slot index.
+ */
+static inline void ipc_slot_sem_name(int index, char *buf, size_t buflen)
+{
+    snprintf(buf, buflen, "%s%d", IPC_SLOT_SEM_PREFIX, index);
+}
+
+/**
+ * @brief Validate IPC string argument length (1..IPC_MAX_STRING_LEN).
+ */
+static inline int ipc_validate_string(const char *s)
+{
+    if (!s)
+        return -1;
+    size_t len = strlen(s);
+    if (len < 1 || len > IPC_MAX_STRING_LEN)
+        return -1;
+    return 0;
+}
 
 /**
  * @brief Command types for IPC operations.

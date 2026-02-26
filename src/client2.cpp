@@ -3,12 +3,12 @@
  * @brief Client 2: loads libipc.so via dlopen/dlsym. Operations: subtract, divide, search.
  */
 #include "ipc_defs.h"
+#include "client_common.h"
 
 #include <cstdint>
+#include <cstdlib>
 #include <cstdio>
-#include <cstring>
 #include <dlfcn.h>
-#include <string>
 #include <vector>
 
 /* Function pointer typedefs for the library API */
@@ -19,19 +19,35 @@ typedef int  (*ipc_divide_fn)(int32_t, int32_t, uint64_t *);
 typedef int  (*ipc_search_fn)(const char *, const char *, uint64_t *);
 typedef int  (*ipc_get_result_fn)(uint64_t, ResponsePayload *, ipc_status_t *);
 
-struct PendingRequest {
-    uint64_t    id;
-    ipc_cmd_t   cmd;
-    std::string description;
-    int32_t     a = 0;
-    int32_t     b = 0;
-    std::string s1;
-    std::string s2;
-};
-
 static ipc_get_result_fn fn_get_result = nullptr;
 static ipc_divide_fn fn_divide = nullptr;
 static ipc_search_fn fn_search = nullptr;
+
+static void *open_ipc_library()
+{
+    const char *env_path = std::getenv("IPC_LIB_PATH");
+    if (env_path && env_path[0] != '\0') {
+        void *h = dlopen(env_path, RTLD_NOW);
+        if (h) {
+            printf("Loaded libipc from IPC_LIB_PATH: %s\n", env_path);
+            return h;
+        }
+        fprintf(stderr, "dlopen via IPC_LIB_PATH failed (%s): %s\n",
+                env_path, dlerror());
+    }
+
+    void *h = dlopen("./libipc.so", RTLD_NOW);
+    if (h)
+        return h;
+
+    h = dlopen("libipc.so", RTLD_NOW);
+    if (h)
+        return h;
+
+    fprintf(stderr, "dlopen failed: tried IPC_LIB_PATH, ./libipc.so, libipc.so: %s\n",
+            dlerror());
+    return nullptr;
+}
 
 static int resubmit_pending(PendingRequest &req)
 {
@@ -45,35 +61,6 @@ static int resubmit_pending(PendingRequest &req)
     if (rc == 0)
         req.id = new_id;
     return rc;
-}
-
-static void retry_pending_after_restart(std::vector<PendingRequest> &pending)
-{
-    if (pending.empty())
-        return;
-
-    for (auto &req : pending) {
-        req.id = 0;
-    }
-
-    printf("\nNotice: server restart detected. Re-submitting %zu async request(s)...\n",
-           pending.size());
-    auto it = pending.begin();
-    while (it != pending.end()) {
-        int rc = resubmit_pending(*it);
-        if (rc == 0) {
-            printf("Re-submitted [%s], new request ID: %lu\n",
-                   it->description.c_str(), static_cast<unsigned long>(it->id));
-            ++it;
-        } else if (rc == IPC_ERR_SERVER_RESTARTED) {
-            printf("Server is still restarting; pending requests remain queued for retry.\n");
-            break;
-        } else {
-            printf("Failed to re-submit [%s]; dropping this pending request.\n",
-                   it->description.c_str());
-            it = pending.erase(it);
-        }
-    }
 }
 
 static void check_pending(std::vector<PendingRequest> &pending)
@@ -120,7 +107,7 @@ static void check_pending(std::vector<PendingRequest> &pending)
         } else if (rc == IPC_NOT_READY) {
             ++it;
         } else if (rc == IPC_ERR_SERVER_RESTARTED) {
-            retry_pending_after_restart(pending);
+            retry_pending_after_restart(pending, resubmit_pending);
             return;
         } else {
             printf("Error: request %lu not found.\n",
@@ -130,28 +117,11 @@ static void check_pending(std::vector<PendingRequest> &pending)
     }
 }
 
-static bool pre_menu_restart_probe(std::vector<PendingRequest> &pending)
-{
-    ResponsePayload probe_result{};
-    ipc_status_t probe_status = IPC_STATUS_OK;
-    int rc = fn_get_result(0, &probe_result, &probe_status);
-    if (rc == IPC_ERR_SERVER_RESTARTED) {
-        if (pending.empty()) {
-            printf("\nNotice: server restart detected. Reconnected to fresh IPC state.\n");
-        } else {
-            retry_pending_after_restart(pending);
-        }
-        return true;
-    }
-    return false;
-}
-
 int main()
 {
     /* Load library at runtime */
-    void *handle = dlopen("./libipc.so", RTLD_NOW);
+    void *handle = open_ipc_library();
     if (!handle) {
-        fprintf(stderr, "dlopen failed: %s\n", dlerror());
         return 1;
     }
 
@@ -179,7 +149,7 @@ int main()
     bool running = true;
 
     while (running) {
-        if (pre_menu_restart_probe(pending))
+        if (pre_menu_restart_probe(pending, fn_get_result, resubmit_pending))
             continue;
 
         printf("\n1. Subtract 2 numbers        (blocking)\n"
@@ -191,25 +161,14 @@ int main()
         fflush(stdout);
 
         int choice = 0;
-        if (scanf("%d", &choice) != 1) {
-            int c;
-            while ((c = getchar()) != '\n' && c != EOF) {}
-            printf("Invalid input.\n");
+        if (!read_menu_choice(&choice))
             continue;
-        }
-        int c;
-        while ((c = getchar()) != '\n' && c != EOF) {}
 
         switch (choice) {
         case 1: {
             int32_t a, b;
-            printf("Enter operand 1: ");
-            fflush(stdout);
-            if (scanf("%d", &a) != 1) { printf("Invalid input.\n"); break; }
-            printf("Enter operand 2: ");
-            fflush(stdout);
-            if (scanf("%d", &b) != 1) { printf("Invalid input.\n"); break; }
-            while ((c = getchar()) != '\n' && c != EOF) {}
+            if (!read_two_ints(&a, &b))
+                break;
 
             printf("\nSending request...\n");
             int32_t result;
@@ -227,13 +186,8 @@ int main()
         }
         case 2: {
             int32_t a, b;
-            printf("Enter operand 1: ");
-            fflush(stdout);
-            if (scanf("%d", &a) != 1) { printf("Invalid input.\n"); break; }
-            printf("Enter operand 2: ");
-            fflush(stdout);
-            if (scanf("%d", &b) != 1) { printf("Invalid input.\n"); break; }
-            while ((c = getchar()) != '\n' && c != EOF) {}
+            if (!read_two_ints(&a, &b))
+                break;
 
             uint64_t req_id;
             char desc[64];
@@ -254,14 +208,10 @@ int main()
         }
         case 3: {
             char s1[IPC_MAX_STRING_LEN + 2], s2[IPC_MAX_STRING_LEN + 2];
-            printf("Enter substring: ");
-            fflush(stdout);
-            if (!fgets(s1, sizeof(s1), stdin)) { printf("Invalid input.\n"); break; }
-            s1[strcspn(s1, "\n")] = '\0';
-            printf("Enter string: ");
-            fflush(stdout);
-            if (!fgets(s2, sizeof(s2), stdin)) { printf("Invalid input.\n"); break; }
-            s2[strcspn(s2, "\n")] = '\0';
+            if (!read_short_string("Enter substring: ", s1, sizeof(s1)))
+                break;
+            if (!read_short_string("Enter string: ", s2, sizeof(s2)))
+                break;
 
             uint64_t req_id;
             char desc[128];
