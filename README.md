@@ -57,9 +57,15 @@ for the dispatcher. This can be overridden with the `-t N` command-line flag
 
 ### Non-Blocking Demonstration
 
-Multiply and divide operations include an artificial 2-second server-side delay
-to demonstrate that non-blocking calls return immediately. Concat results arrive
-before multiply results, showing out-of-order completion.
+Multiply and divide operations include an artificial server-side delay of
+**2 milliseconds** to keep test runs fast. This still preserves non-blocking
+semantics (request returns immediately, result becomes available later).
+
+If you want a visually obvious demo in the interactive clients, temporarily
+increase the delay in `src/server.cpp` (inside `process_math`) from
+`std::chrono::milliseconds(2)` to a larger value such as
+`std::chrono::seconds(10)`, rebuild, and rerun. With a larger delay, concat/search
+results will visibly complete before multiply/divide results.
 
 ## Build
 
@@ -132,7 +138,7 @@ sudo apt update && sudo apt install -y build-essential cmake python3 python3-ven
 sudo apt install -y doxygen graphviz sphinx-doc cppcheck
 ```
 
-Or use CMake directly:
+If you prefer not to use the Makefile wrapper, run CMake directly:
 
 ```bash
 cmake -B build
